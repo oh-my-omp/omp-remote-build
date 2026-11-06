@@ -109,29 +109,22 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	registerInitTools(pi, ensureEnv);
 
 	/**
-	 * Tools this plugin has deactivated in this session. Only these are ever activated again, so a
-	 * session whose caller left a tool out of its explicit tool list never gains it from this plugin.
-	 */
-	const deactivated = new Set<string>();
-
-	/**
-	 * Shows this plugin's tools only where `ensureEnv` would accept them, for the session's role,
-	 * and leaves every other tool's activation as it is. The tools are registered active, so a session
-	 * that starts where they apply presents them as OMP decides (`xd://` devices); a tool activated
-	 * again later is presented top-level, because `setActiveTools` pins names it newly enables.
-	 * OMP has no event for a session moving to another directory, so this runs at session
-	 * start/switch, after `/worktree`, `/wt` or `/move` has moved the session, and before every
-	 * agent start (covering moves made without those inputs, such as by an extension tool).
+	 * Shows this plugin's tools only where `ensureEnv` would accept them, for the session's role. The tools
+	 * are registered with `defaultInactive`, so no session has them active from the factory. This runs at
+	 * session start and switch, and after `/worktree`, `/wt` or `/move` has moved the session. The new
+	 * active set keeps every other active tool, drops plugin tools that are not wanted, adds the wanted
+	 * plugin tools, and is ordered by `pi.getAllTools()` registration order. `setActiveTools` is called
+	 * only when that set or its order differs from the current active tools.
 	 */
 	const syncActiveTools = async (ctx: ExtensionContext): Promise<void> => {
 		const wanted = new Set(await activeToolsFor(ctx));
 		const current = pi.getActiveTools();
-		const removed = current.filter(name => name in PLUGIN_TOOLS && !wanted.has(name));
-		const restored = [...deactivated].filter(name => wanted.has(name) && !current.includes(name));
-		if (removed.length === 0 && restored.length === 0) return;
-		await pi.setActiveTools([...current.filter(name => !removed.includes(name)), ...restored]);
-		for (const name of removed) deactivated.add(name);
-		for (const name of restored) deactivated.delete(name);
+		const kept = current.filter(name => !(name in PLUGIN_TOOLS) || wanted.has(name));
+		const enabled = [...wanted].filter(name => !current.includes(name));
+		const rank = new Map(pi.getAllTools().map((tool, index) => [tool.name, index] as const));
+		const next = [...kept, ...enabled].sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER));
+		if (next.length === current.length && next.every((name, i) => name === current[i])) return;
+		await pi.setActiveTools(next);
 	};
 	const syncActiveToolsLogged = (ctx: ExtensionContext): Promise<void> =>
 		syncActiveTools(ctx).catch((error: unknown) => {
@@ -140,11 +133,6 @@ export default function remoteBuild(pi: ExtensionAPI) {
 
 	pi.on("session_switch", async (_event, ctx) => {
 		await syncActiveToolsLogged(ctx);
-	});
-
-	pi.on("before_agent_start", async (_event, ctx) => {
-		await syncActiveToolsLogged(ctx);
-		return undefined;
 	});
 
 	// /worktree and /move: once the session has moved, show the tools that apply there.
