@@ -288,6 +288,7 @@ async function initEnvironment(
 export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => Promise<PreparedEnv>): void {
 	const initTool = {
 		name: "remote_env_init",
+		defaultInactive: true,
 		label: tr("Remote env init", "远程环境初始化"),
 		description: "Prepare this worktree's remote build container and return an initialization report.\n\nTopics — read the one a call needs before making it:\n- `xd://remote_env_init/usage` — before initializing, rebuilding, or recreating a worktree environment",
 		docTopics: () => ({ usage: readFileSync(new URL("./topics/remote_env_init/usage.md", import.meta.url), "utf8") }),
@@ -306,6 +307,7 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 
 	const buildTool = {
 		name: "remote_env_build_image",
+		defaultInactive: true,
 		label: tr("Remote env build image", "远程环境构建镜像"),
 		description: "Build a candidate project image and run bootstrap for the preparer subagent.\n\nTopics — read the one a call needs before making it:\n- `xd://remote_env_build_image/usage` — before building a candidate or publishing the preparer's final report",
 		docTopics: () => ({ usage: readFileSync(new URL("./topics/remote_env_build_image/usage.md", import.meta.url), "utf8") }),

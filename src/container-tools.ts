@@ -216,6 +216,7 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 
 	const execTool = {
 		name: "container_exec",
+		defaultInactive: true,
 		label: tr("Container exec", "容器执行"),
 		description: "Open an interactive PTY in the current remote-build container through Komodo.\n\nTopics — read the one a call needs before making it:\n- `xd://container_exec/usage` — before opening a container terminal or interpreting its exit status",
 		docTopics: () => ({ usage: readFileSync(new URL("./topics/container_exec/usage.md", import.meta.url), "utf8") }),
@@ -251,6 +252,7 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 
 	const writeTool = {
 		name: "container_write_stdin",
+		defaultInactive: true,
 		label: tr("Container stdin", "容器标准输入"),
 		description: "Send characters to a container PTY and/or poll for output.\n\nTopics — read the one a call needs before making it:\n- `xd://container_write_stdin/usage` — before sending input, polling output, or interpreting exit status",
 		docTopics: () => ({ usage: readFileSync(new URL("./topics/container_write_stdin/usage.md", import.meta.url), "utf8") }),
@@ -272,6 +274,7 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 
 	const listTool = {
 		name: "container_list_sessions",
+		defaultInactive: true,
 		label: tr("Container sessions", "容器会话"),
 		description: "List container PTY sessions for the current remote-build environment.\n\nTopics — read the one a call needs before making it:\n- `xd://container_list_sessions/usage` — before listing sessions or interpreting ended sessions and transport status",
 		docTopics: () => ({ usage: readFileSync(new URL("./topics/container_list_sessions/usage.md", import.meta.url), "utf8") }),
@@ -298,6 +301,7 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 
 	const killTool = {
 		name: "container_kill_session",
+		defaultInactive: true,
 		label: tr("Kill container session", "终止容器会话"),
 		description: "Terminate the local km PTY client for a container session.\n\nTopics — read the one a call needs before making it:\n- `xd://container_kill_session/usage` — before terminating a client or choosing how to end its remote shell",
 		docTopics: () => ({ usage: readFileSync(new URL("./topics/container_kill_session/usage.md", import.meta.url), "utf8") }),

@@ -109,41 +109,39 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	registerInitTools(pi, ensureEnv);
 
 	/**
-	 * Tools this plugin has deactivated in this session. Only these are ever activated again, so a
-	 * session whose caller left a tool out of its explicit tool list never gains it from this plugin.
+	 * Shows this plugin's tools in every directory of an opted-in project (main checkout or linked worktree)
+	 * whose config parses, for the session's role; calls made from the main checkout still fail in `ensureEnv`.
+	 * The tools are registered with `defaultInactive`, so no session has them active from the factory. This runs at
+	 * session start and switch, after `/worktree`, `/wt` or `/move` has moved the session, and before every
+	 * agent start. The per-turn run covers moves made without the input box: an extension tool such as
+	 * omp-config's `wt` runs `/wt` through `executeBuiltinSlashCommand`, which emits no `input` event, and
+	 * `moveSession` emits no event either. The new active set keeps every other active tool, drops plugin
+	 * tools that are not wanted, adds the wanted plugin tools, and is ordered by `pi.getAllTools()`
+	 * registration order. Session start passes `force` and always applies the set, so the base system prompt is
+	 * rebuilt with the plugin tools: a resumed session restores the active set from its transcript without that
+	 * rebuild. The other call sites apply it only when the set or its order differs from the current active tools,
+	 * so their per-turn sync is a no-op while the cwd is unchanged.
 	 */
-	const deactivated = new Set<string>();
-
-	/**
-	 * Shows this plugin's tools only where `ensureEnv` would accept them, for the session's role,
-	 * and leaves every other tool's activation as it is. The tools are registered active, so a session
-	 * that starts where they apply presents them as OMP decides (`xd://` devices); a tool activated
-	 * again later is presented top-level, because `setActiveTools` pins names it newly enables.
-	 * OMP has no event for a session moving to another directory, so this runs at session
-	 * start/switch, after `/worktree`, `/wt` or `/move` has moved the session, and before every
-	 * agent start (covering moves made without those inputs, such as by an extension tool).
-	 */
-	const syncActiveTools = async (ctx: ExtensionContext): Promise<void> => {
+	const syncActiveTools = async (ctx: ExtensionContext, force: boolean): Promise<void> => {
 		const wanted = new Set(await activeToolsFor(ctx));
 		const current = pi.getActiveTools();
-		const removed = current.filter(name => name in PLUGIN_TOOLS && !wanted.has(name));
-		const restored = [...deactivated].filter(name => wanted.has(name) && !current.includes(name));
-		if (removed.length === 0 && restored.length === 0) return;
-		await pi.setActiveTools([...current.filter(name => !removed.includes(name)), ...restored]);
-		for (const name of removed) deactivated.add(name);
-		for (const name of restored) deactivated.delete(name);
+		const kept = current.filter(name => !(name in PLUGIN_TOOLS) || wanted.has(name));
+		const enabled = [...wanted].filter(name => !current.includes(name));
+		const rank = new Map(pi.getAllTools().map((tool, index) => [tool.name, index] as const));
+		const next = [...kept, ...enabled].sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER));
+		if (!force && next.length === current.length && next.every((name, i) => name === current[i])) return;
+		await pi.setActiveTools(next);
 	};
-	const syncActiveToolsLogged = (ctx: ExtensionContext): Promise<void> =>
-		syncActiveTools(ctx).catch((error: unknown) => {
+	const syncActiveToolsLogged = (ctx: ExtensionContext, force: boolean): Promise<void> =>
+		syncActiveTools(ctx, force).catch((error: unknown) => {
 			ctx.ui.notify(`${tr("remote-build: updating tools failed: ", "remote-build：更新工具失败：")}${humanErrorMessage(error)}`, "warning");
 		});
 
 	pi.on("session_switch", async (_event, ctx) => {
-		await syncActiveToolsLogged(ctx);
+		await syncActiveToolsLogged(ctx, false);
 	});
-
 	pi.on("before_agent_start", async (_event, ctx) => {
-		await syncActiveToolsLogged(ctx);
+		await syncActiveToolsLogged(ctx, false);
 		return undefined;
 	});
 
@@ -164,7 +162,7 @@ export default function remoteBuild(pi: ExtensionAPI) {
 		}
 		void waitForMove(ctx, ctx.sessionManager.getCwd()).then(
 			async moved => {
-				await syncActiveToolsLogged(ctx);
+				await syncActiveToolsLogged(ctx, false);
 				if (source === undefined) return;
 				const root = await worktreeRoot(moved);
 				ctx.ui.setStatus("remote-build", `${tr("remote-build: preparing ", "remote-build：正在准备 ")}${root}`);
@@ -186,7 +184,7 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		await syncActiveToolsLogged(ctx);
+		await syncActiveToolsLogged(ctx, true);
 		const project = await projectConfig(ctx.cwd);
 		if (project === undefined) return;
 		if (ctx.agent.kind === "sub" && isIsolatedSubagent(ctx)) {
@@ -239,10 +237,13 @@ async function projectConfig(cwd: string): Promise<Project | undefined> {
 }
 
 /**
- * The plugin tools to show in `ctx`'s session: none unless the session's current cwd is in a linked
- * worktree whose root has a valid `.omp/remote-build.json` (the conditions `ensureEnv` enforces); then the
- * container tools plus `remote_env_build_image` for the preparer or `remote_env_init` for every other agent.
- * The cwd comes from the session manager: `ctx.cwd` is fixed when the event's context is created.
+ * The plugin tools to show in `ctx`'s session: none unless the session's current cwd is inside an opted-in
+ * project, meaning its worktree root has a valid `.omp/remote-build.json`. Main checkout and linked worktrees
+ * both qualify, so moving between them within a project does not change the tool set and the prompt cache
+ * stays valid. Calls from the main checkout still fail in `ensureEnv`, which reports that environments exist
+ * only in git worktrees. The tools are the container tools plus `remote_env_build_image` for the preparer or
+ * `remote_env_init` for every other agent. The cwd comes from the session manager: `ctx.cwd` is fixed when the
+ * event's context is created.
  */
 async function activeToolsFor(ctx: ExtensionContext): Promise<string[]> {
 	let project: Project | undefined;
@@ -251,7 +252,7 @@ async function activeToolsFor(ctx: ExtensionContext): Promise<string[]> {
 	} catch {
 		return []; // invalid config: ensureEnv would reject every call
 	}
-	if (project === undefined || project.root === (await mainCheckout(project.root))) return [];
+	if (project === undefined) return [];
 	return [...CONTAINER_TOOLS, ctx.agent.name === PREPARER_AGENT_NAME ? "remote_env_build_image" : "remote_env_init"];
 }
 
