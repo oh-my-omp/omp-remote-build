@@ -111,10 +111,13 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	/**
 	 * Shows this plugin's tools only where `ensureEnv` would accept them, for the session's role. The tools
 	 * are registered with `defaultInactive`, so no session has them active from the factory. This runs at
-	 * session start and switch, and after `/worktree`, `/wt` or `/move` has moved the session. The new
-	 * active set keeps every other active tool, drops plugin tools that are not wanted, adds the wanted
-	 * plugin tools, and is ordered by `pi.getAllTools()` registration order. `setActiveTools` is called
-	 * only when that set or its order differs from the current active tools.
+	 * session start and switch, after `/worktree`, `/wt` or `/move` has moved the session, and before every
+	 * agent start. The per-turn run covers moves made without the input box: an extension tool such as
+	 * omp-config's `wt` runs `/wt` through `executeBuiltinSlashCommand`, which emits no `input` event, and
+	 * `moveSession` emits no event either. The new active set keeps every other active tool, drops plugin
+	 * tools that are not wanted, adds the wanted plugin tools, and is ordered by `pi.getAllTools()`
+	 * registration order. `setActiveTools` is called only when that set or its order differs from the
+	 * current active tools, so the per-turn sync is a no-op while the cwd is unchanged.
 	 */
 	const syncActiveTools = async (ctx: ExtensionContext): Promise<void> => {
 		const wanted = new Set(await activeToolsFor(ctx));
@@ -133,6 +136,10 @@ export default function remoteBuild(pi: ExtensionAPI) {
 
 	pi.on("session_switch", async (_event, ctx) => {
 		await syncActiveToolsLogged(ctx);
+	});
+	pi.on("before_agent_start", async (_event, ctx) => {
+		await syncActiveToolsLogged(ctx);
+		return undefined;
 	});
 
 	// /worktree and /move: once the session has moved, show the tools that apply there.
