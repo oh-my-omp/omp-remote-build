@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { applyActiveTools, canonicalToolOrder } from "./active-tools.ts";
 import { CONFIG_PATH, loadConfig } from "./config.ts";
 import { registerContainerTools } from "./container-tools.ts";
 import { checkHost, envIdFor, mainCheckout, prepareEnv, worktreeRoot } from "./environment.ts";
@@ -116,8 +117,9 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	 * agent start. The per-turn run covers moves made without the input box: an extension tool such as
 	 * omp-config's `wt` runs `/wt` through `executeBuiltinSlashCommand`, which emits no `input` event, and
 	 * `moveSession` emits no event either. The new active set keeps every other active tool, drops plugin
-	 * tools that are not wanted, adds the wanted plugin tools, and is ordered by `pi.getAllTools()`
-	 * registration order. Session start passes `force` and always applies the set, so the base system prompt is
+	 * tools that are not wanted, adds the wanted plugin tools, and orders them canonically: builtins first in
+	 * `pi.getAllTools()` order, then every other name sorted by code point (`canonicalToolOrder`), so the order
+	 * does not depend on extension registration timing. Session start passes `force` and always applies the set, so the base system prompt is
 	 * rebuilt with the plugin tools: a resumed session restores the active set from its transcript without that
 	 * rebuild. The other call sites apply it only when the set or its order differs from the current active tools,
 	 * so their per-turn sync is a no-op while the cwd is unchanged.
@@ -127,10 +129,9 @@ export default function remoteBuild(pi: ExtensionAPI) {
 		const current = pi.getActiveTools();
 		const kept = current.filter(name => !(name in PLUGIN_TOOLS) || wanted.has(name));
 		const enabled = [...wanted].filter(name => !current.includes(name));
-		const rank = new Map(pi.getAllTools().map((tool, index) => [tool.name, index] as const));
-		const next = [...kept, ...enabled].sort((a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER));
+		const next = canonicalToolOrder(pi.getAllTools(), [...kept, ...enabled]);
 		if (!force && next.length === current.length && next.every((name, i) => name === current[i])) return;
-		await pi.setActiveTools(next);
+		await applyActiveTools(pi, next);
 	};
 	const syncActiveToolsLogged = (ctx: ExtensionContext, force: boolean): Promise<void> =>
 		syncActiveTools(ctx, force).catch((error: unknown) => {
