@@ -109,8 +109,9 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	registerInitTools(pi, ensureEnv);
 
 	/**
-	 * Shows this plugin's tools only where `ensureEnv` would accept them, for the session's role. The tools
-	 * are registered with `defaultInactive`, so no session has them active from the factory. This runs at
+	 * Shows this plugin's tools in every directory of an opted-in project (main checkout or linked worktree)
+	 * whose config parses, for the session's role; calls made from the main checkout still fail in `ensureEnv`.
+	 * The tools are registered with `defaultInactive`, so no session has them active from the factory. This runs at
 	 * session start and switch, after `/worktree`, `/wt` or `/move` has moved the session, and before every
 	 * agent start. The per-turn run covers moves made without the input box: an extension tool such as
 	 * omp-config's `wt` runs `/wt` through `executeBuiltinSlashCommand`, which emits no `input` event, and
@@ -234,10 +235,13 @@ async function projectConfig(cwd: string): Promise<Project | undefined> {
 }
 
 /**
- * The plugin tools to show in `ctx`'s session: none unless the session's current cwd is in a linked
- * worktree whose root has a valid `.omp/remote-build.json` (the conditions `ensureEnv` enforces); then the
- * container tools plus `remote_env_build_image` for the preparer or `remote_env_init` for every other agent.
- * The cwd comes from the session manager: `ctx.cwd` is fixed when the event's context is created.
+ * The plugin tools to show in `ctx`'s session: none unless the session's current cwd is inside an opted-in
+ * project, meaning its worktree root has a valid `.omp/remote-build.json`. Main checkout and linked worktrees
+ * both qualify, so moving between them within a project does not change the tool set and the prompt cache
+ * stays valid. Calls from the main checkout still fail in `ensureEnv`, which reports that environments exist
+ * only in git worktrees. The tools are the container tools plus `remote_env_build_image` for the preparer or
+ * `remote_env_init` for every other agent. The cwd comes from the session manager: `ctx.cwd` is fixed when the
+ * event's context is created.
  */
 async function activeToolsFor(ctx: ExtensionContext): Promise<string[]> {
 	let project: Project | undefined;
@@ -246,7 +250,7 @@ async function activeToolsFor(ctx: ExtensionContext): Promise<string[]> {
 	} catch {
 		return []; // invalid config: ensureEnv would reject every call
 	}
-	if (project === undefined || project.root === (await mainCheckout(project.root))) return [];
+	if (project === undefined) return [];
 	return [...CONTAINER_TOOLS, ctx.agent.name === PREPARER_AGENT_NAME ? "remote_env_build_image" : "remote_env_init"];
 }
 

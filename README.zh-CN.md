@@ -256,7 +256,7 @@ secret = "S-..."
 
 六个工具的详细调用说明都位于 `xd://<tool>/usage`，由简短的 `xd://<tool>` 工具说明指向。topic 涵盖会话生命周期与传输层退出状态，或初始化与 preparer 发布要求。
 
-这些工具和 preparer 专用的 `remote_env_build_image` 以未激活状态注册，因此会话启动时基础系统提示词里不含它们。它们只在能运行的地方启用：已选择加入的项目里、`.omp/remote-build.json` 能正确解析的 linked worktree。插件在会话开始、切换会话，以及 `/worktree`、`/wt` 或 `/move` 移动会话后，并在每次智能体回合开始前重新评估适用的工具，因此扩展工具造成的移动也能被识别；只有 cwd 需要时才改动激活的工具集合。preparer 得到容器工具和 `remote_env_build_image`；其他会话得到容器工具和 `remote_env_init`。激活通过 `setActiveTools` 完成，因此这些工具以顶层工具呈现，而不是 `xd://` 设备。
+这些工具和 preparer 专用的 `remote_env_build_image` 以未激活状态注册，因此会话启动时基础系统提示词里不含它们。它们在已选择加入的项目的任何目录里启用，包括主检出，只要该项目的 `.omp/remote-build.json` 能正确解析；因此项目内的 `/wt` 和 `/move` 不会改变工具集合和提示词缓存。在主检出里调用时，它们会报告环境只存在于 git worktree 中。插件在会话开始、切换会话，以及 `/worktree`、`/wt` 或 `/move` 移动会话后，并在每次智能体回合开始前重新评估适用的工具，因此扩展工具造成的移动也能被识别；只有 cwd 需要时才改动激活的工具集合。preparer 得到容器工具和 `remote_env_build_image`；其他会话得到容器工具和 `remote_env_init`。激活通过 `setActiveTools` 完成，因此这些工具以顶层工具呈现，而不是 `xd://` 设备。
 
 `km exec` 本身总是以 0 退出，所以传输层的退出码不能说明你的命令结果。请从 shell 里读取命令结果，例如 `cargo test; echo $?`。会话运行时，每个结果显示渲染后的终端：自上次调用以来滚出屏幕的行，然后是当前屏幕；没有变化时显示 `(screen unchanged since the last call)`。已结束的会话返回不可变的最终活动屏幕。实时更新在输出解析后读取不消费轮询观察的屏幕快照，以 250 ms 节流，并在调用仍附着期间补发尾次更新。输出经过净化，并按 omp 默认的尾部限制截断；完整记录保存在会话的 `log_path`。会话限定在当前 cwd 的环境内。轮询已结束会话的最终输出或终止会话时，先释放终端再移除会话；omp 关闭时终止所有剩余的本地传输并释放其活动终端。
 
