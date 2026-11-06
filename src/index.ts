@@ -1,6 +1,4 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
+import { realpathSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { CONFIG_PATH, loadConfig } from "./config.ts";
 import { registerContainerTools } from "./container-tools.ts";
@@ -10,7 +8,7 @@ import { registerInitTools } from "./init.ts";
 import { PREPARER_AGENT_NAME } from "./preparer.ts";
 import { findSession, flush } from "./mutagen.ts";
 import type { EnvState, PreparedEnv, RemoteBuildConfig } from "./types.ts";
-import { setupI18n, tr } from "./i18n.ts";
+import { tr } from "./i18n.ts";
 import { humanErrorMessage, RemoteBuildError } from "./diagnostics.ts";
 
 /** `/worktree [branch]` and its registered name `/wt`. */
@@ -21,44 +19,6 @@ const MOVE_COMMAND = /^\/(?:wt|worktree|move)(?:\s|$)/;
 
 /** Upper bound for the native command to move the session into the new worktree. */
 const MOVE_TIMEOUT_MS = 10 * 60 * 1000;
-
-const OMOMP_FILENAMES = ["omomp.yml", "omomp.yaml", "omomp.json", "omomp.toml"] as const;
-
-/** Reads the OMP-only `omomp-lang.language` setting without making i18n depend on the host. */
-function readOmompLanguage(agentDir: string): unknown {
-	const paths = OMOMP_FILENAMES.map(filename => ({ filename, path: join(agentDir, filename) }));
-	const existing = paths.filter(({ path }) => {
-		try {
-			return statSync(path).isFile();
-		} catch {
-			return false;
-		}
-	});
-	if (existing.length !== 1) return undefined;
-	const { filename, path } = existing[0]!;
-	try {
-		const text = readFileSync(path, "utf8");
-		const parsed = filename.endsWith(".json")
-			? JSON.parse(text)
-			: filename.endsWith(".toml")
-				? Bun.TOML.parse(text)
-				: Bun.YAML.parse(text);
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
-		const section = (parsed as Record<string, unknown>)["omomp-lang"];
-		if (typeof section !== "object" || section === null || Array.isArray(section)) return undefined;
-		const keys = Object.keys(section);
-		if (keys.length !== 1 || keys[0] !== "language") return undefined;
-		const language = (section as Record<string, unknown>).language;
-		return language === "en" || language === "zh" ? language : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** Registers the OMP-side config reader before any labels or statuses are translated. */
-function setupLanguageReader(): void {
-	setupI18n(() => readOmompLanguage(getAgentDir()));
-}
 
 /**
  * Tools that cannot change files in the worktree. Every other tool call is treated
@@ -96,7 +56,6 @@ const PLUGIN_TOOLS: Record<string, true> = {
 };
 
 export default function remoteBuild(pi: ExtensionAPI) {
-	setupLanguageReader();
 	/** Environment state per worktree root, for this agent session. */
 	const envs = new Map<string, EnvState>();
 
