@@ -2,7 +2,7 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import type { Stats } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { applyActiveTools, canonicalToolOrder } from "./active-tools.ts";
+import { applyActiveTools } from "./active-tools.ts";
 import { CONFIG_PATH, loadConfig } from "./config.ts";
 import { registerContainerTools } from "./container-tools.ts";
 import { checkHost, envIdFor, mainCheckout, prepareEnv, worktreeRoot } from "./environment.ts";
@@ -13,6 +13,7 @@ import { findSession, flush } from "./mutagen.ts";
 import type { EnvState, PreparedEnv, RemoteBuildConfig } from "./types.ts";
 import { tr } from "./i18n.ts";
 import { humanErrorMessage, RemoteBuildError } from "./diagnostics.ts";
+import { createDeltaStream, type Delta } from "./tool-delta.ts";
 
 /** `/worktree [branch]` and its registered name `/wt`. */
 const WORKTREE_COMMAND = /^\/(?:wt|worktree)(?:\s|$)/;
@@ -112,45 +113,74 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	registerInitTools(pi, ensureEnv);
 
 	/**
-	 * Shows this plugin's tools in every directory of an opted-in project (main checkout or linked worktree)
-	 * whose config parses, for the session's role; calls made from the main checkout still fail in `ensureEnv`.
-	 * The tools are registered with `defaultInactive`, so no session has them active from the factory. This runs at
-	 * session start and switch, after `/worktree`, `/wt` or `/move` has moved the session, and before every
-	 * agent start. The per-turn run covers moves made without the input box: an extension tool such as
-	 * omp-config's `wt` runs `/wt` through `executeBuiltinSlashCommand`, which emits no `input` event, and
-	 * `moveSession` emits no event either. The new active set keeps every other active tool, drops plugin
-	 * tools that are not wanted, adds the wanted plugin tools, and orders them canonically: builtins first in
-	 * `pi.getAllTools()` order, then every other name sorted by code point (`canonicalToolOrder`), so the order
-	 * does not depend on extension registration timing. Session start passes `force` and always applies the set, so the base system prompt is
-	 * rebuilt with the plugin tools: a resumed session restores the active set from its transcript without that
-	 * rebuild. The other call sites apply it only when the set or its order differs from the current active tools,
-	 * so their per-turn sync is a no-op while the cwd is unchanged.
+	 * Tool set and prompt cache (oh-my-omp paradigm rule, "启用工具集与缓存"). The tools are registered with
+	 * `defaultInactive`. A system lifecycle starts at session start or switch: the plugin then writes the tools
+	 * that apply to the session's cwd and role (`availabilityFor`) into the active set, in canonical order, and
+	 * those tools become the baseline. Within the lifecycle the active set is not rewritten when the cwd stops
+	 * qualifying (`/wt`, `/move`, or omp-config's `wt` tool, which runs `/wt` without an `input` event): baseline
+	 * tools that no longer apply are announced in a `omp-remote-build/tools` delta appended to the conversation
+	 * and refused in `tool_call`, and the delta is retracted once they apply again, so the system/tools prefix
+	 * and its prompt cache survive the move. Only a tool outside the baseline (the session started outside
+	 * every opted-in project) widens the baseline with one canonical rewrite. Session start always writes the
+	 * set, so the base system prompt is rebuilt with the plugin tools: a resumed session restores the active
+	 * set from its transcript without that rebuild.
 	 */
-	const syncActiveTools = async (ctx: ExtensionContext, force: boolean): Promise<void> => {
-		const wanted = new Set(await activeToolsFor(ctx));
+	let baseline: ReadonlySet<string> = new Set();
+	/** The cwd whose availability the current delta reflects; a tool batch re-evaluates only after a move. */
+	let reconciledCwd: string | undefined;
+	const deltas = createDeltaStream("omp-remote-build/tools");
+
+	/** Writes the active set with exactly `own` as this plugin's tools; no write when they already match, unless `force`. */
+	const writeOwnTools = async (own: ReadonlySet<string>, force: boolean): Promise<void> => {
 		const current = pi.getActiveTools();
-		const kept = current.filter(name => !(name in PLUGIN_TOOLS) || wanted.has(name));
-		const enabled = [...wanted].filter(name => !current.includes(name));
-		const next = canonicalToolOrder(pi.getAllTools(), [...kept, ...enabled]);
-		if (!force && next.length === current.length && next.every((name, i) => name === current[i])) return;
-		await applyActiveTools(pi, next);
+		const currentOwn = new Set(current.filter(name => name in PLUGIN_TOOLS));
+		if (!force && currentOwn.size === own.size && [...own].every(name => currentOwn.has(name))) return;
+		await applyActiveTools(pi, [...current.filter(name => !(name in PLUGIN_TOOLS)), ...own]);
 	};
-	const syncActiveToolsLogged = (ctx: ExtensionContext, force: boolean): Promise<void> =>
-		syncActiveTools(ctx, force).catch((error: unknown) => {
-			ctx.ui.notify(`${tr("remote-build: updating tools failed: ", "remote-build：更新工具失败：")}${humanErrorMessage(error)}`, "warning");
-		});
+
+	const startLifecycle = async (ctx: ExtensionContext, force: boolean): Promise<void> => {
+		const availability = await availabilityFor(ctx);
+		const own = new Set(availableTools(availability));
+		await writeOwnTools(own, force);
+		baseline = own;
+		reconciledCwd = availability.cwd;
+	};
+
+	/** Widens the baseline when the cwd needs a tool outside it, then returns the delta for the baseline tools. */
+	const reconcile = async (ctx: ExtensionContext): Promise<Delta> => {
+		const availability = await availabilityFor(ctx);
+		const available = availableTools(availability);
+		if (available.some(name => !baseline.has(name))) {
+			const widened = new Set([...baseline, ...available]);
+			await writeOwnTools(widened, false);
+			baseline = widened;
+		}
+		reconciledCwd = availability.cwd;
+		const unavailable = [...baseline].filter(name => !available.includes(name));
+		return unavailable.length === 0 ? { kind: "none" } : { kind: "text", body: unavailableBody(unavailable, availability) };
+	};
+
+	const warnToolsFailed = (ctx: ExtensionContext, error: unknown): void => {
+		ctx.ui.notify(`${tr("remote-build: updating tools failed: ", "remote-build：更新工具失败：")}${humanErrorMessage(error)}`, "warning");
+	};
 
 	pi.on("session_switch", async (_event, ctx) => {
-		await syncActiveToolsLogged(ctx, false);
+		await startLifecycle(ctx, false).catch((error: unknown) => warnToolsFailed(ctx, error));
+	});
+	pi.on("turn_start", () => {
+		deltas.turnStarted();
 	});
 	pi.on("before_agent_start", async (_event, ctx) => {
-		await syncActiveToolsLogged(ctx, false);
-		return undefined;
+		try {
+			return deltas.atPrompt(ctx, await reconcile(ctx));
+		} catch (error) {
+			warnToolsFailed(ctx, error);
+			return undefined;
+		}
 	});
 
-	// /worktree and /move: once the session has moved, show the tools that apply there.
-	// /worktree in an opted-in project also checks the build host before the native command
-	// runs and prepares the new worktree's environment after the move.
+	// /worktree in an opted-in project checks the build host before the native command runs and prepares
+	// the new worktree's environment after the move. The tool delta follows at the next prompt or tool batch.
 	pi.on("input", async (event, ctx) => {
 		const text = event.text.trim();
 		if (!MOVE_COMMAND.test(text)) return undefined;
@@ -165,7 +195,6 @@ export default function remoteBuild(pi: ExtensionAPI) {
 		}
 		void waitForMove(ctx, ctx.sessionManager.getCwd()).then(
 			async moved => {
-				await syncActiveToolsLogged(ctx, false);
 				if (source === undefined) return;
 				const root = await worktreeRoot(moved);
 				ctx.ui.setStatus("remote-build", `${tr("remote-build: preparing ", "remote-build：正在准备 ")}${root}`);
@@ -187,7 +216,7 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		await syncActiveToolsLogged(ctx, true);
+		await startLifecycle(ctx, true).catch((error: unknown) => warnToolsFailed(ctx, error));
 		const project = await projectConfig(ctx.cwd);
 		if (project === undefined) return;
 		if (ctx.agent.kind === "sub" && isIsolatedSubagent(ctx)) {
@@ -199,8 +228,15 @@ export default function remoteBuild(pi: ExtensionAPI) {
 		}
 	});
 
+	// A baseline tool the cwd does not qualify for is refused with the reason the delta gives.
 	// No tool runs in a worktree whose environment is still preparing or failed.
-	pi.on("tool_call", async (_event, ctx) => {
+	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName in PLUGIN_TOOLS) {
+			const availability = await availabilityFor(ctx);
+			if (!availableTools(availability).includes(event.toolName)) {
+				return { block: true, reason: unavailableBody([event.toolName], availability) };
+			}
+		}
 		const state = stateFor(ctx.cwd);
 		if (state === undefined || state.kind === "ready") return undefined;
 		if (state.kind === "failed") return { block: true, reason: `remote-build environment failed: ${state.error}` };
@@ -212,13 +248,19 @@ export default function remoteBuild(pi: ExtensionAPI) {
 		}
 	});
 
-	// Implicit flush after every write-class tool call.
+	// Implicit flush after every write-class tool call; after a batch that moved the session, the tool delta.
 	pi.on("tool_result", async (event, ctx) => {
-		if (event.toolName in NON_WRITING_TOOLS) return undefined;
-		const state = stateFor(ctx.cwd);
-		if (state?.kind !== "ready") return undefined;
-		await flush(state.env.host, state.env.mutagenSession);
-		return undefined;
+		if (!(event.toolName in NON_WRITING_TOOLS)) {
+			const state = stateFor(ctx.cwd);
+			if (state?.kind === "ready") await flush(state.env.host, state.env.mutagenSession);
+		}
+		if (ctx.sessionManager.getCwd() === reconciledCwd) return undefined;
+		try {
+			return deltas.afterTools(ctx, await reconcile(ctx));
+		} catch (error) {
+			warnToolsFailed(ctx, error);
+			return undefined;
+		}
 	});
 }
 
@@ -323,24 +365,66 @@ async function projectConfig(cwd: string): Promise<Project | undefined> {
 	return config === undefined ? undefined : { root: walked, config };
 }
 
+/** What the session's current cwd allows this plugin's tools: the cwd is in an opted-in project, outside every one, or its config is invalid. */
+type Availability =
+	| { readonly kind: "project"; readonly cwd: string; readonly tools: readonly string[] }
+	| { readonly kind: "outside"; readonly cwd: string }
+	| { readonly kind: "invalid"; readonly cwd: string; readonly error: string };
+
 /**
- * The plugin tools to show in `ctx`'s session: none unless the session's current cwd is inside an opted-in
+ * The plugin tools that apply to `ctx`'s session: none unless the session's current cwd is inside an opted-in
  * project, meaning its worktree root has a valid `.omp/remote-build.json`. Main checkout and linked worktrees
- * both qualify, so moving between them within a project does not change the tool set and the prompt cache
- * stays valid. Calls from the main checkout still fail in `ensureEnv`, which reports that environments exist
- * only in git worktrees. The tools are the container tools plus `remote_env_build_image` for the preparer or
- * `remote_env_init` for every other agent. The cwd comes from the session manager: `ctx.cwd` is fixed when the
- * event's context is created.
+ * both qualify, so moving between them within a project changes nothing. Calls from the main checkout still
+ * fail in `ensureEnv`, which reports that environments exist only in git worktrees. The tools are the container
+ * tools plus `remote_env_build_image` for the preparer or `remote_env_init` for every other agent. The cwd comes
+ * from the session manager: `ctx.cwd` is fixed when the event's context is created.
  */
-async function activeToolsFor(ctx: ExtensionContext): Promise<string[]> {
+async function availabilityFor(ctx: ExtensionContext): Promise<Availability> {
+	const cwd = ctx.sessionManager.getCwd();
 	let project: Project | undefined;
 	try {
-		project = await projectConfig(ctx.sessionManager.getCwd());
-	} catch {
-		return []; // invalid config: ensureEnv would reject every call
+		project = await projectConfig(cwd);
+	} catch (error) {
+		return { kind: "invalid", cwd, error: humanErrorMessage(error) };
 	}
-	if (project === undefined) return [];
-	return [...CONTAINER_TOOLS, ctx.agent.name === PREPARER_AGENT_NAME ? "remote_env_build_image" : "remote_env_init"];
+	if (project === undefined) return { kind: "outside", cwd };
+	const tools = [...CONTAINER_TOOLS, ctx.agent.name === PREPARER_AGENT_NAME ? "remote_env_build_image" : "remote_env_init"];
+	return { kind: "project", cwd, tools };
+}
+
+function availableTools(availability: Availability): readonly string[] {
+	switch (availability.kind) {
+		case "project":
+			return availability.tools;
+		case "outside":
+		case "invalid":
+			return [];
+		default: {
+			const unreachable: never = availability;
+			return unreachable;
+		}
+	}
+}
+
+/** Model-facing text: which listed tools are unavailable now and why. */
+function unavailableBody(tools: readonly string[], availability: Availability): string {
+	let reason: string;
+	switch (availability.kind) {
+		case "project":
+			reason = "they do not apply to this agent";
+			break;
+		case "outside":
+			reason = `the current directory ${availability.cwd} is not inside a project whose worktree root has a valid ${CONFIG_PATH}`;
+			break;
+		case "invalid":
+			reason = `${CONFIG_PATH} for the current directory ${availability.cwd} is invalid: ${availability.error}`;
+			break;
+		default: {
+			const unreachable: never = availability;
+			return unreachable;
+		}
+	}
+	return `These remote-build tools are listed but unavailable: ${tools.join(", ")}. Reason: ${reason}. Calls to them are refused until the session is in a remote-build project again.`;
 }
 
 /**

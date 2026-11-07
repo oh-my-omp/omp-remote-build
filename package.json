@@ -38,7 +38,7 @@
     }
   },
   "devDependencies": {
-    "@oh-my-pi/pi-coding-agent": "18.6.1",
+    "@oh-my-pi/pi-coding-agent": "latest",
     "@types/bun": "latest",
     "omp-unified-exec": "github:oh-my-omp/omp-unified-exec",
     "typescript": "^5.7.3"
