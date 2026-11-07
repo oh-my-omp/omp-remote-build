@@ -45,7 +45,7 @@ export function projectIdFor(mainRoot: string): ProjectId {
 /** Loads the host config; throws unless the build host answers SSH and its Komodo Core answers the API. */
 export async function checkHost(): Promise<HostConfig> {
 	const host = await loadHost();
-	await run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host.ssh, "true"]);
+	await run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host.ssh, "true"], { stdout: "ignore" });
 	await komodoReachable(host);
 	return host;
 }
@@ -74,7 +74,7 @@ export async function prepareEnv(root: string, config: RemoteBuildConfig): Promi
 		(await findSession(host, id)) ?? (await createSession(host, id, root, remotePath, await deriveIgnoreRules(root, config)));
 	await flush(host, session);
 	for (const [target, source] of Object.entries(config.containerFiles)) {
-		await writeRemoteFile(host, `${remotePath}/${target}`, await readFile(join(root, source)));
+		await writeRemoteFile(host, `${remotePath}/${target}`, { kind: "bytes", bytes: await readFile(join(root, source)) });
 	}
 	const env: PreparedEnv = { id, root, remotePath, mutagenSession: session, container: `rb-${id}`, config, host };
 	if (config.imageSource.kind === "configured") {

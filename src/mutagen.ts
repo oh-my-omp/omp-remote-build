@@ -39,7 +39,7 @@ export async function createSession(
 		...ignores.patterns.map(p => `--ignore="${p.replaceAll('"', '""')}"`),
 		root,
 		`${host.ssh}:${remotePath}`,
-	]);
+	], { stdout: "ignore" });
 	const session = await findSession(host, id);
 	if (session === undefined) throw new RemoteBuildError({ kind: "mutagen-missing", id });
 	return session;
@@ -47,5 +47,5 @@ export async function createSession(
 
 /** Runs one full synchronization cycle and waits for it. */
 export async function flush(host: HostConfig, session: string): Promise<void> {
-	await run([host.bin.mutagen, "sync", "flush", session]);
+	await run([host.bin.mutagen, "sync", "flush", session], { stdout: "ignore" });
 }
