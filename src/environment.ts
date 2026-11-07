@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { loadHost } from "./host.ts";
 import { deriveIgnoreRules } from "./ignores.ts";
@@ -63,8 +62,10 @@ export function envContainerSpec(env: PreparedEnv, image: string): ContainerSpec
 
 /**
  * Brings up the environment for worktree `root`: Mutagen replica, container-only
- * files, and, for a configured image, the Komodo container. Other image sources
- * leave the container to `remote_env_init`. Idempotent; an existing session is reused.
+ * files (each streamed from its local file to ssh stdin; a missing source fails
+ * before its ssh starts), and, for a configured image, the Komodo container. Other
+ * image sources leave the container to `remote_env_init`. Idempotent; an existing
+ * session is reused.
  */
 export async function prepareEnv(root: string, config: RemoteBuildConfig): Promise<PreparedEnv> {
 	const host = await checkHost();
@@ -74,7 +75,7 @@ export async function prepareEnv(root: string, config: RemoteBuildConfig): Promi
 		(await findSession(host, id)) ?? (await createSession(host, id, root, remotePath, await deriveIgnoreRules(root, config)));
 	await flush(host, session);
 	for (const [target, source] of Object.entries(config.containerFiles)) {
-		await writeRemoteFile(host, `${remotePath}/${target}`, { kind: "bytes", bytes: await readFile(join(root, source)) });
+		await writeRemoteFile(host, `${remotePath}/${target}`, { kind: "file", path: join(root, source) });
 	}
 	const env: PreparedEnv = { id, root, remotePath, mutagenSession: session, container: `rb-${id}`, config, host };
 	if (config.imageSource.kind === "configured") {
