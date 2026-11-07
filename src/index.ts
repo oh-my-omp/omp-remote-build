@@ -1,4 +1,6 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
+import type { Stats } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { applyActiveTools, canonicalToolOrder } from "./active-tools.ts";
 import { CONFIG_PATH, loadConfig } from "./config.ts";
@@ -226,15 +228,99 @@ interface Project {
 	readonly config: RemoteBuildConfig;
 }
 
-async function projectConfig(cwd: string): Promise<Project | undefined> {
-	let root: string;
+/**
+ * The git worktree root containing `cwd`, found by walking up until the first
+ * ancestor with a `.git` entry (directory for a main checkout, file for a
+ * linked worktree), then confirming that entry resolves to a usable repository:
+ * a worktree's gitfile must point at an existing `gitdir`. Returns:
+ * - the root when the walk decides (a `.git` directory, or a gitfile whose
+ *   target exists);
+ * - `undefined` when no `.git` exists anywhere up to the fs root — git would
+ *   also report no work tree, so the caller can refuse the project without a
+ *   subprocess (issue #21 result 1 covers project-external cwds too);
+ * - `null` when the walk cannot decide and git's answer must be asked: a git
+ *   env override (the real git looks somewhere the walk does not know), an
+ *   unreadable ancestor, or a `.git` file that is not a parseable gitfile.
+ *
+ * `cwd` is canonicalized first, so the returned root matches what
+ * `realpathSync.native(<git rev-parse --show-toplevel>)` returned before, and
+ * a symlinked cwd finds the repository behind the link.
+ */
+function worktreeRootByFs(cwd: string): string | null | undefined {
+	if (
+		process.env.GIT_DIR !== undefined ||
+		process.env.GIT_WORK_TREE !== undefined ||
+		process.env.GIT_CEILING_DIRECTORIES !== undefined ||
+		process.env.GIT_COMMON_DIR !== undefined
+	) {
+		return null; // git looks somewhere the walk does not know: let git answer
+	}
+	let current: string;
 	try {
-		root = await worktreeRoot(cwd);
+		current = realpathSync.native(cwd);
+	} catch {
+		return undefined; // no cwd to walk from: no project
+	}
+	for (;;) {
+		const marker = `${current}/.git`;
+		let markerStat: Stats;
+		try {
+			markerStat = statSync(marker);
+		} catch (error) {
+			if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+				const parent = dirname(current);
+				if (parent === current) return undefined; // walked past the fs root: not a git work tree
+				current = parent;
+				continue;
+			}
+			return null; // unreadable ancestor: let git judge
+		}
+		if (markerStat.isDirectory()) return current; // main checkout root
+		// `.git` file: a linked worktree's gitfile. An unparseable one or a
+		// gitdir target that has vanished is the walk's horizon: git judges.
+		const gitdir = parseGitfile(marker);
+		if (gitdir === undefined) return null;
+		try {
+			statSync(gitdir);
+		} catch {
+			return null;
+		}
+		return current;
+	}
+}
+
+/** `gitdir: <path>` value of a worktree gitfile, resolved against the file's directory; undefined when unparseable. */
+function parseGitfile(gitfile: string): string | undefined {
+	let text: string;
+	try {
+		text = readFileSync(gitfile, "utf8");
 	} catch {
 		return undefined;
 	}
-	const config = await loadConfig(root);
-	return config === undefined ? undefined : { root, config };
+	const match = /^gitdir: (.+)$/m.exec(text);
+	if (match === null) return undefined;
+	const target = match[1].trim();
+	return isAbsolute(target) ? target : join(dirname(gitfile), target);
+}
+
+async function projectConfig(cwd: string): Promise<Project | undefined> {
+	const walked = worktreeRootByFs(cwd);
+	if (walked === null) {
+		// The fs walk could not decide (unreadable ancestor, malformed gitfile):
+		// let git judge, as before. Rare bounds — a plain non-git cwd or a dead
+		// gitfile never reach here when the walk can answer them itself.
+		let root: string;
+		try {
+			root = await worktreeRoot(cwd);
+		} catch {
+			return undefined;
+		}
+		const config = await loadConfig(root);
+		return config === undefined ? undefined : { root, config };
+	}
+	if (walked === undefined) return undefined; // no `.git` anywhere up the fs root: no project, no subprocess
+	const config = await loadConfig(walked);
+	return config === undefined ? undefined : { root: walked, config };
 }
 
 /**
@@ -257,6 +343,19 @@ async function activeToolsFor(ctx: ExtensionContext): Promise<string[]> {
 	return [...CONTAINER_TOOLS, ctx.agent.name === PREPARER_AGENT_NAME ? "remote_env_build_image" : "remote_env_init"];
 }
 
+/**
+ * True when any `session_init` entry of the session carries `isolated` — not only
+ * the first: a forked/tan session appends its own `session_init` mid-tree
+ * (`session-manager.ts` `appendSessionInit` parents it at the current leaf, and
+ * `extractSessionInit` documents several per file). The host's read-only surface
+ * (`ReadonlySessionManager`) exposes the whole entry set only through
+ * `getEntries()`/`getTree()`/`getBranch()`, each of which materializes more than
+ * the scan needs (`getEntries` copies the array; `getTree` allocates a node per
+ * entry; `getBranch` would narrow the answer to one branch, changing the
+ * semantics), so the iteration cost stays linear in the entry count. Issue
+ * oh-my-omp/omp-remote-build#21 decides row 3: keep the semantics, keep
+ * `getEntries()`, and record that the host offers no smaller entry point.
+ */
 function isIsolatedSubagent(ctx: ExtensionContext): boolean {
 	return ctx.sessionManager
 		.getEntries()
