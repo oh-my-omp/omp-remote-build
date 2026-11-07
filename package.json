@@ -1,6 +1,6 @@
 {
   "name": "omp-remote-build",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "omp plugin: per-worktree Mutagen replica to a remote Docker host with a Komodo-managed build/test container and container PTY tools.",
   "keywords": [
     "omp",
