@@ -159,11 +159,16 @@ async function collectSession(
 	yieldMs: number,
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<SessionDetails> | undefined,
+	store: SessionStore,
 ): Promise<AgentToolResult<SessionDetails>> {
 	session.touch();
 	const stream = onUpdate ? streamScreen(session, onUpdate) : undefined;
 	try {
-		return sessionResult(session, observed(await session.collect({ deadlineMs: Date.now() + yieldMs, externalAbort: signal })));
+		const result = sessionResult(session, observed(await session.collect({ deadlineMs: Date.now() + yieldMs, externalAbort: signal })));
+		// §K2: the result carries the final screen (collect already awaited the
+		// freeze), so removing here cannot lose it; remove() releases the terminal.
+		if (session.hasExited && session.outputClosed.isClosed) store.remove(session.id);
+		return result;
 	} finally {
 		stream?.stop();
 	}
@@ -245,7 +250,7 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 			if (session.failureMessage) throw new Error(`Could not open container PTY: ${session.failureMessage}`);
 			store.insert(session);
 			sendInput(session, params.input);
-			return collectSession(session, params.yield_time_ms ?? 10_000, signal, onUpdate);
+			return collectSession(session, params.yield_time_ms ?? 10_000, signal, onUpdate, store);
 		},
 	} satisfies ToolDefinition<typeof execSchema> & { docTopics(): Readonly<Record<string, string>> };
 	pi.registerTool(execTool);
@@ -262,12 +267,7 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 			const env = await ensureEnv(ctx.cwd);
 			const session = getSession(params.session_id, env);
 			sendInput(session, params.chars);
-			const result = await collectSession(session, params.yield_time_ms ?? 250, signal, onUpdate);
-			if (session.hasExited && session.outputClosed.isClosed) {
-				await session.release();
-				store.remove(session.id);
-			}
-			return result;
+			return collectSession(session, params.yield_time_ms ?? 250, signal, onUpdate, store);
 		},
 	} satisfies ToolDefinition<typeof writeSchema> & { docTopics(): Readonly<Record<string, string>> };
 	pi.registerTool(writeTool);
@@ -311,7 +311,7 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 			const env = await ensureEnv(ctx.cwd);
 			const session = getSession(params.session_id, env);
 			await terminateSession(session, "graceful");
-			const result = await collectSession(session, 500, undefined, onUpdate);
+			const result = await collectSession(session, 500, undefined, onUpdate, store);
 			await session.release();
 			store.remove(session.id);
 			return result;
