@@ -218,8 +218,13 @@ export async function deriveIgnoreRules(root: string, config: RemoteBuildConfig)
 	if (excludeText !== undefined) appendSource(patterns, excludeText, "", ignoreCase, exclude);
 	await appendWorktreeSources(root, patterns, ignoreCase);
 
-	const tracked = nulFields((await git(root, ["ls-files", "--cached", "-z"])).text);
-	const ignoredTracked = await ignoredPaths(root, tracked);
+	// Git's own ignore evaluation over the index: tracked paths matched by the same
+	// exclude sources this function translates. Running `check-ignore --no-index`
+	// over the full path list would materialize the whole list and an equal-sized
+	// stdin blob in the JS heap; `-i --exclude-standard` asks git directly. The
+	// result mirrors the previous pipeline's Set: unmerged stages collapse, and
+	// pattern order ignores duplicates exactly as before.
+	const ignoredTracked = new Set(nulFields((await git(root, ["ls-files", "--cached", "-i", "-z", "--exclude-standard"])).text));
 	const parents = new Set<string>();
 	for (const path of ignoredTracked) ancestors(path, parents);
 	for (const path of config.include) ancestors(path, parents);
