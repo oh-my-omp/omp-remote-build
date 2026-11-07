@@ -24,8 +24,9 @@ function captured(stream: ReadableStream<Uint8Array> | number | undefined): Prom
 /**
  * Spawns argv with the declared stdio. Files are opened here, before the process
  * starts, so a missing or unreadable stdin file fails without spawning (Bun.file
- * as stdin would create a missing file and feed it empty); descriptors are closed
- * once the process has exited.
+ * as stdin would create a missing file and feed it empty); a directory, which
+ * opens but cannot be read, fails here too with the read's own EISDIR. Descriptors
+ * are closed once the process has exited.
  */
 async function spawn(
 	argv: readonly string[],
@@ -54,6 +55,7 @@ async function spawn(
 				case "file": {
 					const handle = await open(stdin.path, "r");
 					handles.push(handle);
+					if ((await handle.stat()).isDirectory()) await handle.read(new Uint8Array(1), 0, 1, 0);
 					input = handle.fd;
 					break;
 				}

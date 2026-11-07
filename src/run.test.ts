@@ -28,11 +28,13 @@ test("stdin sources: bytes, file by descriptor, and another process's stdout", a
 	expect(await run(["cat"], { stdin: { kind: "pipe", stream: upstream.stdout } })).toBe("from pipe");
 });
 
-test("a missing stdin file rejects before spawning and is not created", async () => {
-	const missing = join(await mkdtemp(join(tmpdir(), "rb-run-")), "missing");
-	const marker = join(tmpdir(), `rb-run-spawned-${process.pid}`);
+test("a missing or directory stdin file rejects before spawning", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "rb-run-"));
+	const missing = join(dir, "missing");
+	const marker = join(dir, "spawned");
 	await expect(run(["touch", marker], { stdin: { kind: "file", path: missing }, stdout: "ignore" })).rejects.toMatchObject({ code: "ENOENT" });
 	expect(existsSync(missing)).toBe(false);
+	await expect(run(["touch", marker], { stdin: { kind: "file", path: dir }, stdout: "ignore" })).rejects.toMatchObject({ code: "EISDIR" });
 	expect(existsSync(marker)).toBe(false);
 });
 
