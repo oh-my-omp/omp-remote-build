@@ -286,6 +286,14 @@ async function containerState(endpoint: Endpoint, deployment: string): Promise<s
 	return string(response.state, "GetDeploymentContainer.state");
 }
 
+/** Like `containerState`, but resolves `undefined` when the Deployment does not exist. */
+async function containerStateOrAbsent(endpoint: Endpoint, deployment: string): Promise<string | undefined> {
+	const response = await requestOrAbsent(endpoint, {
+		endpoint: "read", type: "GetDeploymentContainer", params: { deployment },
+	}, /Did not find any Deployment matching/);
+	return response === undefined ? undefined : string(record(response, "GetDeploymentContainer").state, "GetDeploymentContainer.state");
+}
+
 /** Runs Deploy and waits for its Update to complete successfully. */
 async function deploy(endpoint: Endpoint, deployment: string): Promise<void> {
 	let update = parseUpdate(await request(endpoint, {
@@ -360,19 +368,27 @@ export async function runOnce(
 	const { deployment } = await upsertDeployment(endpoint, host, spec, { kind: "once", ...command });
 	await deploy(endpoint, deployment.id);
 	const deadline = Date.now() + options.timeoutMs;
-	let state: Record<string, unknown>;
+	let exitState: Record<string, unknown> | undefined;
 	for (;;) {
 		if (options.signal?.aborted) throw new RemoteBuildError({ kind: "container-aborted", name: spec.name });
-		const current = await inspectContainer(endpoint, host, spec.name);
-		if (current === undefined) throw new RemoteBuildError({ kind: "container-disappeared", name: spec.name });
-		const status = string(current.Status, "State.Status");
-		if (status === "exited" || status === "dead") {
-			state = current;
-			break;
+		const state = await containerStateOrAbsent(endpoint, deployment.id);
+		// Absent Deployment and NotDeployed both mean the container is gone.
+		if (state === undefined || state === "not_deployed") throw new RemoteBuildError({ kind: "container-disappeared", name: spec.name });
+		let status = state;
+		if (status === "unknown") {
+			// Core cannot tell (cold cache or unreachable server): ask the Docker daemon directly, like the old polling did.
+			const inspected = await inspectContainer(endpoint, host, spec.name);
+			if (inspected === undefined) throw new RemoteBuildError({ kind: "container-disappeared", name: spec.name });
+			status = string(inspected.Status, "State.Status");
+			if (status === "exited" || status === "dead") exitState = inspected;
 		}
+		if (status === "exited" || status === "dead") break;
 		if (Date.now() >= deadline) throw new RemoteBuildError({ kind: "container-timeout", name: spec.name, minutes: Math.round(options.timeoutMs / 60_000) });
 		await Bun.sleep(2_000);
 	}
+	// One full inspect for the exit code, skipped when the unknown-fallback already read it.
+	const state = exitState ?? await inspectContainer(endpoint, host, spec.name);
+	if (state === undefined) throw new RemoteBuildError({ kind: "container-disappeared", name: spec.name });
 	const log = record(await request(endpoint, {
 		endpoint: "read", type: "GetContainerLog", params: { server: host.komodo.server, container: spec.name, tail: 300, timestamps: false },
 	}), "GetContainerLog");
@@ -407,10 +423,22 @@ export async function imageExists(host: HostConfig, image: string): Promise<bool
 	return response !== undefined;
 }
 
-/** Whether container `name` exists and is running on the build host. */
+/**
+ * Whether container `name` exists and is running on the build host.
+ * Reads the Deployment's cached state; a container that is paused, restarting,
+ * stopping or being removed still counts as running, matching docker's
+ * `State.Running`. When Core reports `unknown` the container is inspected
+ * directly, preserving the old behavior.
+ */
 export async function containerRunning(host: HostConfig, name: string): Promise<boolean> {
-	const state = await inspectContainer(await loadEndpoint(host), host, name);
-	return state !== undefined && boolean(state.Running, "State.Running");
+	const endpoint = await loadEndpoint(host);
+	const state = await containerStateOrAbsent(endpoint, name);
+	if (state === undefined || state === "not_deployed") return false;
+	if (state === "unknown") {
+		const inspected = await inspectContainer(endpoint, host, name);
+		return inspected !== undefined && boolean(inspected.Running, "State.Running");
+	}
+	return state === "running" || state === "paused" || state === "restarting" || state === "stopping" || state === "removing";
 }
 
 /** argv of an interactive shell in `container` through the km CLI. */
