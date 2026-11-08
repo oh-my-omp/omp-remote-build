@@ -50,8 +50,8 @@ const requests: SeenRequest[] = [];
 let queue: Expectation[] = [];
 const failures: string[] = [];
 
-/** Marker: the expectation answers HTTP 500 with this single `trace` entry. */
-const http500 = (trace: string) => ({ __http500: trace });
+/** Marker: the expectation answers HTTP 500 with this top-level `error` message, like Core's missing-resource reply. */
+const http500 = (message: string) => ({ __http500: message });
 
 /** Resets the recorded requests and installs a new expectation queue. */
 function scenario(name: string, expectations: Expectation[]): void {
@@ -176,9 +176,8 @@ const stub = Bun.serve({
 		}
 		next.check?.(body.params);
 		const payload = next.respond();
-		if (typeof payload === "object" && payload !== null && "__http500" in payload) {
-			const trace = (payload as { __http500: string }).__http500;
-			return Response.json({ error: trace, trace: [trace] }, { status: 500 });
+		if (typeof payload === "object" && payload !== null && "__http500" in payload && typeof payload.__http500 === "string") {
+			return Response.json({ error: payload.__http500, trace: [] }, { status: 500 });
 		}
 		const encoded = JSON.stringify(payload);
 		requests.push({ endpoint: new URL(req.url).pathname, type: body.type, bytes: encoded.length });
