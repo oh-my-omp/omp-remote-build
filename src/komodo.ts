@@ -159,9 +159,9 @@ async function request(endpoint: Endpoint, operation: Request): Promise<unknown>
 }
 
 /**
- * Like `request`, but resolves `undefined` when Core answers HTTP 500 with a
- * `trace` entry matching `absent` (Docker's "no such object" errors). The body
- * is only matched, never exposed.
+ * Like `request`, but resolves `undefined` when Core answers HTTP 500 with an
+ * `error` message or a `trace` entry matching `absent` (Docker's "no such
+ * object" errors). The body is only matched, never exposed.
  */
 async function requestOrAbsent(endpoint: Endpoint, operation: Request, absent: RegExp): Promise<unknown | undefined> {
 	const response = await send(endpoint, operation);
@@ -173,8 +173,12 @@ async function requestOrAbsent(endpoint: Endpoint, operation: Request, absent: R
 		} catch {
 			body = undefined;
 		}
-		const trace = typeof body === "object" && body !== null && "trace" in body ? body.trace : undefined;
-		if (Array.isArray(trace) && trace.some((entry) => typeof entry === "string" && absent.test(entry))) return undefined;
+		if (typeof body === "object" && body !== null) {
+			// Core puts a missing resource's message in `error`; a nested cause, such as
+			// periphery's "No such container", arrives in `trace`.
+			if ("error" in body && typeof body.error === "string" && absent.test(body.error)) return undefined;
+			if ("trace" in body && Array.isArray(body.trace) && body.trace.some((entry) => typeof entry === "string" && absent.test(entry))) return undefined;
+		}
 		throw failure(operation, response);
 	}
 	await response.body?.cancel();
