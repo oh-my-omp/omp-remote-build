@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import type { Stats } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -271,18 +271,21 @@ interface Project {
 }
 
 /**
- * The git worktree root containing `cwd`, found by walking up until the first
- * ancestor with a `.git` entry (directory for a main checkout, file for a
- * linked worktree), then confirming that entry resolves to a usable repository:
- * a worktree's gitfile must point at an existing `gitdir`. Returns:
- * - the root when the walk decides (a `.git` directory, or a gitfile whose
- *   target exists);
- * - `undefined` when no `.git` exists anywhere up to the fs root — git would
- *   also report no work tree, so the caller can refuse the project without a
- *   subprocess (issue #21 result 1 covers project-external cwds too);
+ * The git worktree root containing `cwd`, found by walking up to the first
+ * ancestor whose `.git` entry is a usable repository: a directory that passes
+ * git's acceptance checks, or a gitfile whose `gitdir` target exists. A `.git`
+ * directory that is not a usable repository — missing HEAD, an invalid HEAD, or
+ * no `objects`/`refs` directory — is skipped, as git does, and the walk
+ * continues above it. Returns:
+ * - the root when the walk decides (a usable `.git` directory, or a gitfile
+ *   whose target exists);
+ * - `undefined` when no usable `.git` exists anywhere up to the fs root — git
+ *   would also report no work tree, so the caller can refuse the project
+ *   without a subprocess (issue #21 result 1 covers project-external cwds too);
  * - `null` when the walk cannot decide and git's answer must be asked: a git
  *   env override (the real git looks somewhere the walk does not know), an
- *   unreadable ancestor, or a `.git` file that is not a parseable gitfile.
+ *   unreadable ancestor, a symlinked HEAD, or a `.git` file that is not a
+ *   parseable gitfile.
  *
  * `cwd` is canonicalized first, so the returned root matches what
  * `realpathSync.native(<git rev-parse --show-toplevel>)` returned before, and
@@ -317,7 +320,16 @@ function worktreeRootByFs(cwd: string): string | null | undefined {
 			}
 			return null; // unreadable ancestor: let git judge
 		}
-		if (markerStat.isDirectory()) return current; // main checkout root
+		if (markerStat.isDirectory()) {
+			const usable = isGitDirectory(marker);
+			if (usable === null) return null;
+			if (usable) return current; // main checkout root
+			// Not a git directory: git skips it and keeps looking above.
+			const parent = dirname(current);
+			if (parent === current) return undefined;
+			current = parent;
+			continue;
+		}
 		// `.git` file: a linked worktree's gitfile. An unparseable one or a
 		// gitdir target that has vanished is the walk's horizon: git judges.
 		const gitdir = parseGitfile(marker);
@@ -329,6 +341,37 @@ function worktreeRootByFs(cwd: string): string | null | undefined {
 		}
 		return current;
 	}
+}
+
+/**
+ * Whether `gitdir` is a directory git would accept as a repository, or `null`
+ * when only git can decide. Git accepts a HEAD that is `ref:` pointing into
+ * `refs/` (any whitespace after the colon) or a hexadecimal object id, plus
+ * `objects/` and `refs/` directories; a symlinked HEAD is left to git.
+ */
+function isGitDirectory(gitdir: string): boolean | null {
+	const head = join(gitdir, "HEAD");
+	let text: string;
+	try {
+		// Git follows a symlinked HEAD itself, including one whose ref is unborn.
+		if (lstatSync(head).isSymbolicLink()) return null;
+		text = readFileSync(head, "utf8");
+	} catch (error) {
+		if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR" || error.code === "EISDIR")) return false;
+		return null;
+	}
+	// Git validates the symbolic ref's `refs/` prefix, and for a detached HEAD
+	// accepts a leading hexadecimal object id, inspecting nothing after it.
+	if (!/^ref:\s*refs\/\S/.test(text) && !/^[0-9a-fA-F]{40}/.test(text)) return false;
+	for (const name of ["objects", "refs"]) {
+		try {
+			if (!statSync(join(gitdir, name)).isDirectory()) return false;
+		} catch (error) {
+			if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return false;
+			return null;
+		}
+	}
+	return true;
 }
 
 /** `gitdir: <path>` value of a worktree gitfile, resolved against the file's directory; undefined when unparseable. */
