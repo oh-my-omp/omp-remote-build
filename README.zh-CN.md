@@ -137,13 +137,19 @@ sequenceDiagram
 ## 安装
 
 ```bash
-omp install https://github.com/oh-my-omp/omp-unified-exec   # 依赖，装一次
-omp install https://github.com/oh-my-omp/omp-remote-build
+omp install https://github.com/oh-my-omp/omp-unified-exec#release   # 依赖，装一次
+omp install https://github.com/oh-my-omp/omp-remote-build#release
 ```
 
-从 GitHub 安装会跟随默认分支；更新时重新执行同一条 `omp install <url>`。安装或更新后重启 `omp`。
+两个安装都跟随 `release` 分支；更新时重新执行同一条 `omp install <url>`。安装或更新后重启 `omp`。
 
 然后创建下文描述的两个配置文件，并重启 `omp`。
+
+## 发布
+
+`main` 是开发集成分支，`release` 是分发分支，所以合并 PR 不改变版本号。PR 改为在 [`CHANGELOG.md`](CHANGELOG.md) 的 `## [Unreleased]` 下写条目：暂存改动后运行 lgit（`git add`，再 `uvx --from lgit-cli lgit`），由它连同条目一起提交。
+
+每天 GMT+9 02:00 的定时运行把 `## [Unreleased]` 发布成新版本，升多少由有条目的分类决定。该运行升 `package.json` 的版本，在 `main` 上提交 `chore: release X.Y.Z`，打 tag `vX.Y.Z`，把 `release` 移到同一提交，并创建对应的 GitHub Release。`## [Unreleased]` 为空时当天不发布；维护者也可以在 Actions 页面手动启动一次运行。
 
 ## UI 语言
 
