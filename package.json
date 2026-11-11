@@ -22,12 +22,16 @@
     "examples",
     "README.md",
     "README.zh-CN.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "omp": {
     "extensions": [
       "./src/index.ts"
     ]
+  },
+  "omomp": {
+    "changelog": "CHANGELOG.md"
   },
   "peerDependencies": {
     "omp-unified-exec": "*"

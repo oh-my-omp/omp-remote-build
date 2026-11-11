@@ -137,13 +137,19 @@ The ignore set is fixed when the Mutagen session is created. After changing igno
 ## Install
 
 ```bash
-omp install https://github.com/oh-my-omp/omp-unified-exec   # dependency, once
-omp install https://github.com/oh-my-omp/omp-remote-build
+omp install https://github.com/oh-my-omp/omp-unified-exec#release   # dependency, once
+omp install https://github.com/oh-my-omp/omp-remote-build#release
 ```
 
-GitHub installs track the default branch; re-run the same `omp install <url>` to update. Restart `omp` after installing or updating.
+Both installs track the `release` branch; re-run the same `omp install <url>` to update. Restart `omp` after installing or updating.
 
 Then create the two config files described below and restart `omp`.
+
+## Releases
+
+`main` is development integration and `release` is the distribution branch, so merging a pull request does not change the version. A pull request adds its entry under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md) instead: stage the change and run lgit (`git add`, then `uvx --from lgit-cli lgit`), which commits it with the entry.
+
+A daily run at 02:00 GMT+9 publishes `## [Unreleased]` as the next version; the bump follows the categories that hold entries. That run bumps `package.json`, commits `chore: release X.Y.Z` on `main`, tags `vX.Y.Z`, moves `release` to the same commit and creates the GitHub Release. An empty `## [Unreleased]` means no release that day; maintainers can also start a run from the Actions tab.
 
 ## UI language
 
