@@ -20,6 +20,15 @@ export async function mainCheckout(cwd: string): Promise<string> {
 	return common.replace(/\/\.git$/, "");
 }
 
+/**
+ * Whether worktree root `root` is its repository's main checkout. Git spells the common dir its own way
+ * (`C:/…` on Windows) while worktree roots are `realpathSync.native` results (`C:\…`), so both sides go
+ * through `realpathSync.native` before they are compared.
+ */
+export async function isMainCheckout(root: string): Promise<boolean> {
+	return realpathSync.native(root) === realpathSync.native(await mainCheckout(root));
+}
+
 /** `<slug>-<hash>`: readable, unique per absolute path, valid as Mutagen label value and docker name. */
 function idFor(path: string): string {
 	const slug = basename(path)

@@ -1,11 +1,11 @@
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { Stats } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { applyActiveTools } from "./active-tools.ts";
 import { CONFIG_PATH, loadConfig } from "./config.ts";
 import { registerContainerTools } from "./container-tools.ts";
-import { checkHost, envIdFor, mainCheckout, prepareEnv, worktreeRoot } from "./environment.ts";
+import { checkHost, envIdFor, isMainCheckout, prepareEnv, worktreeRoot } from "./environment.ts";
 import { loadHost } from "./host.ts";
 import { registerInitTools } from "./init.ts";
 import { PREPARER_AGENT_NAME } from "./preparer.ts";
@@ -83,7 +83,9 @@ export default function remoteBuild(pi: ExtensionAPI) {
 		const real = canonicalPath(cwd);
 		if (real === undefined) return undefined;
 		for (const [root, state] of envs) {
-			if (real === root || real.startsWith(`${root}/`)) return state;
+			// Both sides are realpathSync.native results; `relative` handles either separator.
+			const inside = relative(root, real);
+			if (inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside)) return state;
 		}
 		return undefined;
 	};
@@ -94,7 +96,7 @@ export default function remoteBuild(pi: ExtensionAPI) {
 		if (state === undefined) {
 			const project = await projectConfig(cwd);
 			if (project === undefined) throw new Error(`${cwd} is not in a remote-build project (no ${CONFIG_PATH})`);
-			if (project.root === (await mainCheckout(project.root))) {
+			if (await isMainCheckout(project.root)) {
 				throw new Error(`remote-build environments exist only in git worktrees; ${project.root} is the main checkout`);
 			}
 			return begin(project.root, project.config);
@@ -222,7 +224,7 @@ export default function remoteBuild(pi: ExtensionAPI) {
 		if (ctx.agent.kind === "sub" && isIsolatedSubagent(ctx)) {
 			// Isolated subagent: its own workspace gets its own environment.
 			void begin(project.root, project.config).catch(() => {});
-		} else if (project.root !== (await mainCheckout(project.root)) && (await findSession(await loadHost(), envIdFor(project.root)))) {
+		} else if (!(await isMainCheckout(project.root)) && (await findSession(await loadHost(), envIdFor(project.root)))) {
 			// Session (re)opened inside a worktree whose environment already exists.
 			void begin(project.root, project.config).catch(() => {});
 		}
