@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-11-15
+
 ### Fixed
 
 - Fixed main-checkout detection on Windows when git and worktree paths used different separators
