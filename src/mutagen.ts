@@ -1,6 +1,6 @@
+import { RemoteBuildError } from "./diagnostics.ts";
 import { run } from "./run.ts";
 import type { EnvId, HostConfig, MutagenIgnoreRules } from "./types.ts";
-import { RemoteBuildError } from "./diagnostics.ts";
 
 const ENV_LABEL = "rb-env";
 
@@ -13,7 +13,7 @@ export async function findSession(host: HostConfig, id: EnvId): Promise<string |
 		`--label-selector=${ENV_LABEL}=${id}`,
 		"--template={{range .}}{{.Identifier}}\n{{end}}",
 	]);
-	const ids = out.split("\n").filter(line => line.trim() !== "");
+	const ids = out.split("\n").filter((line) => line.trim() !== "");
 	if (ids.length > 1) throw new RemoteBuildError({ kind: "mutagen-duplicate", label: `${ENV_LABEL}=${id}`, ids });
 	return ids[0];
 }
@@ -26,20 +26,23 @@ export async function createSession(
 	remotePath: string,
 	ignores: MutagenIgnoreRules,
 ): Promise<string> {
-	await run([
-		host.bin.mutagen,
-		"sync",
-		"create",
-		`--name=rb-${id}`,
-		"--label=remote-build",
-		`--label=${ENV_LABEL}=${id}`,
-		"--mode=one-way-replica",
-		"--ignore-vcs",
-		// --ignore is a pflag string slice parsed as CSV: quote each value so commas survive.
-		...ignores.patterns.map(p => `--ignore="${p.replaceAll('"', '""')}"`),
-		root,
-		`${host.ssh}:${remotePath}`,
-	], { stdout: "ignore" });
+	await run(
+		[
+			host.bin.mutagen,
+			"sync",
+			"create",
+			`--name=rb-${id}`,
+			"--label=remote-build",
+			`--label=${ENV_LABEL}=${id}`,
+			"--mode=one-way-replica",
+			"--ignore-vcs",
+			// --ignore is a pflag string slice parsed as CSV: quote each value so commas survive.
+			...ignores.patterns.map((p) => `--ignore="${p.replaceAll('"', '""')}"`),
+			root,
+			`${host.ssh}:${remotePath}`,
+		],
+		{ stdout: "ignore" },
+	);
 	const session = await findSession(host, id);
 	if (session === undefined) throw new RemoteBuildError({ kind: "mutagen-missing", id });
 	return session;

@@ -9,11 +9,11 @@
  * Git's byte-oriented ?/classes and doublestar's Unicode matching differ for
  * non-ASCII names; portable ASCII glob operands have equivalent semantics.
  */
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { MutagenIgnoreRules, RemoteBuildConfig } from "./types.js";
 import { RemoteBuildError } from "./diagnostics.ts";
+import type { MutagenIgnoreRules, RemoteBuildConfig } from "./types.js";
 
 type GitResult = { readonly text: string; readonly code: number };
 
@@ -23,11 +23,7 @@ async function git(root: string, args: readonly string[], input?: string): Promi
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	const [text, stderr, code] = await Promise.all([
-		new Response(child.stdout).text(),
-		new Response(child.stderr).text(),
-		child.exited,
-	]);
+	const [text, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
 	if (code !== 0 && !(code === 1 && (args[0] === "config" || args[0] === "check-ignore"))) {
 		throw new RemoteBuildError({ kind: "ignore-command", command: args[0]!, code, output: stderr.trim() });
 	}
@@ -50,7 +46,11 @@ async function ignoredPaths(root: string, paths: readonly string[]): Promise<Set
 async function ignoredDirectories(root: string, paths: readonly string[]): Promise<Set<string>> {
 	const ignored = await ignoredPaths(root, paths);
 	if (paths.length === 0) return ignored;
-	const { text } = await git(root, ["check-ignore", "--no-index", "-v", "-z", "--stdin"], `${paths.map((path) => `${path}/`).join("\0")}\0`);
+	const { text } = await git(
+		root,
+		["check-ignore", "--no-index", "-v", "-z", "--stdin"],
+		`${paths.map((path) => `${path}/`).join("\0")}\0`,
+	);
 	const fields = nulFields(text);
 	if (fields.length % 4 !== 0) throw new RemoteBuildError({ kind: "ignore-response", reason: "verbose" });
 	for (let index = 0; index < fields.length; index += 4) {
@@ -78,7 +78,7 @@ async function optionalFile(path: string, worktree = false): Promise<string | un
 }
 
 function literal(path: string): string {
-	return path.replace(/[\\*?\[\]{}]/g, "\\$&");
+	return path.replace(/[\\*?[\]{}]/g, "\\$&");
 }
 
 /** Git trims only unescaped trailing spaces, not tabs or escaped spaces. */
@@ -94,9 +94,18 @@ function trimGitLine(line: string): string {
 }
 
 const characterClasses: Readonly<Record<string, string>> = {
-	alnum: "a-zA-Z0-9", alpha: "a-zA-Z", blank: " \t", cntrl: "\x01-\x1f\x7f",
-	digit: "0-9", graph: "!-.0-~", lower: "a-z", print: " -.0-~",
-	punct: "!-.:-@\\[-`{-~", space: " \t\r\n\v\f", upper: "A-Z", xdigit: "a-fA-F0-9",
+	alnum: "a-zA-Z0-9",
+	alpha: "a-zA-Z",
+	blank: " \t",
+	cntrl: "\x01-\x1f\x7f",
+	digit: "0-9",
+	graph: "!-.0-~",
+	lower: "a-z",
+	print: " -.0-~",
+	punct: "!-.:-@\\[-`{-~",
+	space: " \t\r\n\v\f",
+	upper: "A-Z",
+	xdigit: "a-fA-F0-9",
 };
 
 function foldLetter(character: string, ignoreCase: boolean): string {
@@ -117,11 +126,17 @@ function translateGlob(pattern: string, ignoreCase: boolean, source: string): st
 			let content = "";
 			let negated = "";
 			if (pattern[index + 1] === "!" || pattern[index + 1] === "^") negated = pattern[++index]!;
-			if (pattern[index + 1] === "]") { content = "\\]"; index++; }
+			if (pattern[index + 1] === "]") {
+				content = "\\]";
+				index++;
+			}
 			let closed = false;
 			while (++index < pattern.length) {
 				const current = pattern[index]!;
-				if (current === "]") { closed = true; break; }
+				if (current === "]") {
+					closed = true;
+					break;
+				}
 				if (current === "\\") {
 					const next = pattern[++index];
 					if (next === undefined) break;
@@ -187,7 +202,7 @@ async function appendWorktreeSources(root: string, patterns: string[], ignoreCas
 	if (text !== undefined) appendSource(patterns, text, scope, ignoreCase, source);
 	const children = (await readdir(directory, { withFileTypes: true }))
 		.filter((entry) => entry.isDirectory() && entry.name !== ".git")
-		.map((entry) => scope === "" ? entry.name : `${scope}/${entry.name}`)
+		.map((entry) => (scope === "" ? entry.name : `${scope}/${entry.name}`))
 		.sort();
 	const ignored = await ignoredPaths(root, children);
 	for (const child of children) {
@@ -207,7 +222,10 @@ export async function deriveIgnoreRules(root: string, config: RemoteBuildConfig)
 	const patterns: string[] = [];
 	const ignoreCase = (await git(root, ["config", "--type=bool", "--get", "core.ignorecase"])).text.trim() === "true";
 	const configured = await git(root, ["config", "-z", "--path", "--get", "core.excludesFile"]);
-	const globalPath = configured.code === 0 ? nulFields(configured.text)[0]! : join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "git", "ignore");
+	const globalPath =
+		configured.code === 0
+			? nulFields(configured.text)[0]!
+			: join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "git", "ignore");
 	if (globalPath !== "") {
 		const path = isAbsolute(globalPath) ? globalPath : resolve(root, globalPath);
 		const text = await optionalFile(path);

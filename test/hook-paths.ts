@@ -41,7 +41,7 @@
  *      flag (ssh only for the isolated subagent).
  */
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdirSync as mkdir, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync as mkdir, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ReadonlySessionManager, SessionEntry } from "@oh-my-pi/pi-coding-agent";
@@ -112,9 +112,9 @@ const realSpawn = Bun.spawn.bind(Bun);
 const resetSpawns = (): void => {
 	spawns = [];
 };
-const spawnedProgram = (program: string): boolean => spawns.some(record => record.program === program);
+const spawnedProgram = (program: string): boolean => spawns.some((record) => record.program === program);
 /** True when a `git` call carried `flag` (e.g. `--git-common-dir` from `mainCheckout`). */
-const spawnedGitWith = (flag: string): boolean => spawns.some(record => record.program === "git" && record.args.includes(flag));
+const spawnedGitWith = (flag: string): boolean => spawns.some((record) => record.program === "git" && record.args.includes(flag));
 
 // --- git fixtures ------------------------------------------------------------
 
@@ -154,7 +154,7 @@ function makePi(): Registered {
 	registered.allTools = () => [
 		{ name: "read", sourceInfo: { source: "builtin" } },
 		{ name: "edit", sourceInfo: { source: "builtin" } },
-		...registered.tools.map(name => ({ name, sourceInfo: { source: "extension" } })),
+		...registered.tools.map((name) => ({ name, sourceInfo: { source: "extension" } })),
 	];
 	const pi = {
 		on: (event: string, handler: unknown) => {
@@ -218,7 +218,7 @@ function makeCtx(opts: { cwd: string; tree?: TreeSpec; subagent?: boolean; moveT
 				isolated: node.isolated,
 			}) as unknown as SessionEntry,
 	);
-	const childrenOf = (parentId: string | null): SessionEntry[] => all.filter(entry => entry.parentId === parentId);
+	const childrenOf = (parentId: string | null): SessionEntry[] => all.filter((entry) => entry.parentId === parentId);
 	const counts: CtxCounts = { getEntries: 0, getChildren: 0, getTree: 0 };
 	const { promise: movedSeen, resolve: resolveMoved } = Promise.withResolvers<void>();
 	let cwdCalls = 0;
@@ -236,7 +236,7 @@ function makeCtx(opts: { cwd: string; tree?: TreeSpec; subagent?: boolean; moveT
 			counts.getEntries++;
 			return [...all];
 		},
-		getEntry: (id: string) => all.find(entry => entry.id === id),
+		getEntry: (id: string) => all.find((entry) => entry.id === id),
 		getChildren: (parentId: string) => {
 			counts.getChildren++;
 			return childrenOf(parentId);
@@ -245,7 +245,7 @@ function makeCtx(opts: { cwd: string; tree?: TreeSpec; subagent?: boolean; moveT
 		getBranch: () => childrenOf(null),
 		getTree: () => {
 			counts.getTree++;
-			return childrenOf(null).map(entry => ({ entry, children: [] }));
+			return childrenOf(null).map((entry) => ({ entry, children: [] }));
 		},
 		getHeader: () => null,
 	} as unknown as ReadonlySessionManager;
@@ -315,16 +315,18 @@ const expectedFull = [...CONTAINER, "remote_env_init"];
 /** The host's canonical order: requested builtins in registry order, then extension names sorted by code point. */
 const canonical = (names: string[], all: { name: string; sourceInfo: { source: string } }[]): string => {
 	const requested = new Set(names);
-	const builtins = [...new Set(all.filter(tool => tool.sourceInfo.source === "builtin" && requested.has(tool.name)).map(tool => tool.name))];
+	const builtins = [
+		...new Set(all.filter((tool) => tool.sourceInfo.source === "builtin" && requested.has(tool.name)).map((tool) => tool.name)),
+	];
 	const builtinSet = new Set(builtins);
-	return [...builtins, ...[...requested].filter(name => !builtinSet.has(name)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))].join(",");
+	return [...builtins, ...[...requested].filter((name) => !builtinSet.has(name)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))].join(",");
 };
 
 // --- scenarios ---------------------------------------------------------------
 
 /** Row 1: no child process on the per-turn path, active sets unchanged. */
 async function perTurnCensus(registered: Registered, dirs: { repoMain: string; wt: string; plain: string; nested: string }): Promise<void> {
-	const contexts = [dirs.repoMain, dirs.wt, dirs.plain, dirs.nested].map(cwd => makeCtx({ cwd }).ctx);
+	const contexts = [dirs.repoMain, dirs.wt, dirs.plain, dirs.nested].map((cwd) => makeCtx({ cwd }).ctx);
 	resetSpawns();
 	censusArmed = true;
 	try {
@@ -383,9 +385,29 @@ async function edgeMatrix(
 /** Row 3: four session shapes plus a non-subagent context; verdict + entry-read census. */
 async function isolatedJudgment(registered: Registered): Promise<void> {
 	const shapes: { name: string; tree: TreeSpec; subagent: boolean; expectIsolated: boolean }[] = [
-		{ name: "single isolated init", tree: { entries: [{ id: "0", parentId: null, type: "session_init", isolated: true }] }, subagent: true, expectIsolated: true },
-		{ name: "single plain init", tree: { entries: [{ id: "0", parentId: null, type: "session_init" }] }, subagent: true, expectIsolated: false },
-		{ name: "no init", tree: { entries: [{ id: "0", parentId: null, type: "message" }, { id: "1", parentId: "0", type: "message" }] }, subagent: true, expectIsolated: false },
+		{
+			name: "single isolated init",
+			tree: { entries: [{ id: "0", parentId: null, type: "session_init", isolated: true }] },
+			subagent: true,
+			expectIsolated: true,
+		},
+		{
+			name: "single plain init",
+			tree: { entries: [{ id: "0", parentId: null, type: "session_init" }] },
+			subagent: true,
+			expectIsolated: false,
+		},
+		{
+			name: "no init",
+			tree: {
+				entries: [
+					{ id: "0", parentId: null, type: "message" },
+					{ id: "1", parentId: "0", type: "message" },
+				],
+			},
+			subagent: true,
+			expectIsolated: false,
+		},
 		{
 			name: "late isolated init on a sibling branch",
 			tree: {
@@ -400,7 +422,12 @@ async function isolatedJudgment(registered: Registered): Promise<void> {
 			subagent: true,
 			expectIsolated: true,
 		},
-		{ name: "non-subagent context", tree: { entries: [{ id: "0", parentId: null, type: "session_init", isolated: true }] }, subagent: false, expectIsolated: false },
+		{
+			name: "non-subagent context",
+			tree: { entries: [{ id: "0", parentId: null, type: "session_init", isolated: true }] },
+			subagent: false,
+			expectIsolated: false,
+		},
 	];
 
 	for (const [index, shape] of shapes.entries()) {
@@ -426,9 +453,11 @@ async function isolatedJudgment(registered: Registered): Promise<void> {
 		check(
 			`${shape.name}: isolated judgment`,
 			shape.subagent && shape.expectIsolated ? spawnedProgram("ssh") : !spawnedProgram("ssh"),
-			`spawns: ${spawns.map(record => record.program).join(",")}`,
+			`spawns: ${spawns.map((record) => record.program).join(",")}`,
 		);
-		console.log(`    ${shape.name}: getEntries=${harness.counts.getEntries} getChildren=${harness.counts.getChildren} getTree=${harness.counts.getTree}`);
+		console.log(
+			`    ${shape.name}: getEntries=${harness.counts.getEntries} getChildren=${harness.counts.getChildren} getTree=${harness.counts.getTree}`,
+		);
 		if (EXPECT_LIGHT) {
 			check(
 				`${shape.name}: judgment reads the entries once (host has no smaller entry)`,
@@ -446,15 +475,22 @@ async function hookSequences(registered: Registered, dirs: { repoMain: string; p
 	resetSpawns();
 	censusArmed = true;
 	const inside = makeCtx({ cwd: dirs.repoMain });
-	const insideResult = (await call(registered, "input", { type: "input", text: "/worktree feature-branch", source: "interactive" }, inside.ctx)) as
-		| { handled?: boolean }
-		| undefined;
+	const insideResult = (await call(
+		registered,
+		"input",
+		{ type: "input", text: "/worktree feature-branch", source: "interactive" },
+		inside.ctx,
+	)) as { handled?: boolean } | undefined;
 	censusArmed = false;
-	check("/worktree in project: host check ran (ssh spawn)", spawnedProgram("ssh"), `spawns: ${spawns.map(record => record.program).join(",")}`);
+	check(
+		"/worktree in project: host check ran (ssh spawn)",
+		spawnedProgram("ssh"),
+		`spawns: ${spawns.map((record) => record.program).join(",")}`,
+	);
 	check("/worktree in project: command refused", insideResult?.handled === true, `result: ${JSON.stringify(insideResult)}`);
 	check(
 		"/worktree in project: refusal reported as an error",
-		inside.notifications.some(note => note.level === "error"),
+		inside.notifications.some((note) => note.level === "error"),
 		`notifications: ${JSON.stringify(inside.notifications)}`,
 	);
 
@@ -463,22 +499,25 @@ async function hookSequences(registered: Registered, dirs: { repoMain: string; p
 	resetSpawns();
 	censusArmed = true;
 	const outside = makeCtx({ cwd: dirs.plain, moveTo: dirs.repoMain });
-	const outsideResult = (await call(registered, "input", { type: "input", text: "/worktree elsewhere", source: "interactive" }, outside.ctx)) as
-		| { handled?: boolean }
-		| undefined;
+	const outsideResult = (await call(
+		registered,
+		"input",
+		{ type: "input", text: "/worktree elsewhere", source: "interactive" },
+		outside.ctx,
+	)) as { handled?: boolean } | undefined;
 	const moved = await Promise.race([outside.movedSeen.then(() => true), Bun.sleep(OBSERVE_DEADLINE_MS).then(() => false)]);
 	censusArmed = false;
 	check("/worktree outside project: not refused", outsideResult?.handled !== true, `result: ${JSON.stringify(outsideResult)}`);
-	check("/worktree outside project: no host check", !spawnedProgram("ssh"), `spawns: ${spawns.map(record => record.program).join(",")}`);
+	check("/worktree outside project: no host check", !spawnedProgram("ssh"), `spawns: ${spawns.map((record) => record.program).join(",")}`);
 	check("/worktree outside project: move waiter observed the move", moved, "the waiter never reported a move");
 	if (EXPECT_LIGHT) {
 		check(
 			"/worktree outside project: waiter spawned no child",
 			spawns.length === 0,
-			`spawns: ${spawns.map(record => `${record.program} ${record.args.slice(1).join(" ")}`).join(" | ")}`,
+			`spawns: ${spawns.map((record) => `${record.program} ${record.args.slice(1).join(" ")}`).join(" | ")}`,
 		);
 	} else {
-		console.log(`    waiter spawns (baseline): ${spawns.map(record => record.program).join(",") || "none"}`);
+		console.log(`    waiter spawns (baseline): ${spawns.map((record) => record.program).join(",") || "none"}`);
 	}
 }
 

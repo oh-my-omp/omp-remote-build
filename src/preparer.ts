@@ -1,8 +1,8 @@
 import { fileURLToPath } from "node:url";
-import { z, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, z } from "@oh-my-pi/pi-coding-agent";
+import { tr } from "../omomp-shared/i18n.ts";
 import { BASE_IMAGE } from "./project.ts";
 import type { PreparedEnv } from "./types.ts";
-import { tr } from "./i18n.ts";
 
 /** Agent definition name of the preparer subagent; `ctx.agent.name` in its session. */
 export const PREPARER_AGENT_NAME = "remote-env-preparer";
@@ -15,9 +15,7 @@ export const PREPARER_AGENT_NAME = "remote-env-preparer";
 const reportSchema = z.object({
 	result: z.enum(["success", "partial", "failed"]).describe("success, partial or failed"),
 	toolchain: z.string().describe("languages and versions"),
-	packages: z
-		.string()
-		.describe("official: <list>; aur -bin: <list>; compiled from source: <package: reason> | none"),
+	packages: z.string().describe("official: <list>; aur -bin: <list>; compiled from source: <package: reason> | none"),
 	bootstrap: z.string().describe("the bootstrap command you passed, or none"),
 	verified: z
 		.array(z.string())
@@ -34,8 +32,7 @@ const PREPARER_OUTPUT_SCHEMA = reportSchema.toJsonSchema();
 
 /** The rendered report, published to `.omp/remote-build.preparer.md` and shown in `remote_env_init`'s output. */
 export function renderPreparerReport(report: PreparerReport): string {
-	const verified =
-		report.verified.length === 0 ? ["verified: none"] : ["verified:", ...report.verified.map(line => `- ${line}`)];
+	const verified = report.verified.length === 0 ? ["verified: none"] : ["verified:", ...report.verified.map((line) => `- ${line}`)];
 	return [
 		`result: ${report.result}`,
 		`toolchain: ${report.toolchain}`,

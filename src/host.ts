@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
+import { type Diagnostic, RemoteBuildError } from "./diagnostics.ts";
 import type { HostConfig } from "./types.ts";
-import { RemoteBuildError, type Diagnostic } from "./diagnostics.ts";
 
 /** User-level host config: `<omp agent dir>/remote-build.json` (`~/.omp/agent` by default). */
 export function hostConfigPath(): string {
@@ -23,7 +23,10 @@ export async function loadHost(): Promise<HostConfig> {
 	try {
 		raw = JSON.parse(await Bun.file(path).text());
 	} catch (error) {
-		throw new RemoteBuildError({ kind: "host-read", path, detail: error instanceof Error ? error.message : String(error) }, { cause: error });
+		throw new RemoteBuildError(
+			{ kind: "host-read", path, detail: error instanceof Error ? error.message : String(error) },
+			{ cause: error },
+		);
 	}
 	const fail = (field: string, reason: Extract<Diagnostic, { kind: "config-field" }>["reason"]): never => {
 		throw new RemoteBuildError({ kind: "config-field", path, field, reason });
@@ -35,8 +38,7 @@ export async function loadHost(): Promise<HostConfig> {
 		}
 		return value as Record<string, unknown>;
 	};
-	const text = (value: unknown, field: string): string =>
-		typeof value === "string" && value.trim() !== "" ? value : fail(field, "text");
+	const text = (value: unknown, field: string): string => (typeof value === "string" && value.trim() !== "" ? value : fail(field, "text"));
 
 	const config = object(raw, "config", KNOWN_FIELDS);
 	const komodo = object(config.komodo, "komodo", KNOWN_KOMODO_FIELDS);
