@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ImageSource, RemoteBuildConfig } from "./types.ts";
 import { RemoteBuildError } from "./diagnostics.ts";
+import type { ImageSource, RemoteBuildConfig } from "./types.ts";
 
 /** Path of the opt-in config, relative to a worktree root. */
 export const CONFIG_PATH = ".omp/remote-build.json";
@@ -106,7 +106,7 @@ function parseConfig(raw: unknown): RemoteBuildConfig {
 		workdir: absolutePath(obj.workdir ?? "/workspace", "workdir"),
 		shell: nonEmptyString(obj.shell ?? "bash", "shell"),
 		ignore: stringArray(obj.ignore ?? [], "ignore"),
-		include: stringArray(obj.include ?? [], "include").map(p => relativePath(p, "include")),
+		include: stringArray(obj.include ?? [], "include").map((p) => relativePath(p, "include")),
 		containerFiles: containerFiles(obj.containerFiles ?? {}),
 		volumes: stringArray(obj.volumes ?? [], "volumes"),
 		env: stringRecord(obj.env ?? {}, "env"),
@@ -125,7 +125,8 @@ function imageSource(image: unknown, dockerfile: unknown): ImageSource {
 function bootstrap(value: unknown): string | null {
 	if (value === undefined) return null;
 	const command = nonEmptyString(value, "bootstrap");
-	if (/[\r\n\0]/.test(command)) throw new RemoteBuildError({ kind: "config-field", path: CONFIG_PATH, field: "bootstrap", reason: "single-line" });
+	if (/[\r\n\0]/.test(command))
+		throw new RemoteBuildError({ kind: "config-field", path: CONFIG_PATH, field: "bootstrap", reason: "single-line" });
 	return command;
 }
 

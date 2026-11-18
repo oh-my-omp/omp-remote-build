@@ -48,7 +48,12 @@ const dir = stubDir;
 const runModule = await import(join(src, "run.ts"));
 const remoteFiles = await import(join(src, "remote-files.ts"));
 const mutagen = await import(join(src, "mutagen.ts"));
-const host = { ssh: "stub-host", remoteRoot: join(dir, "remote"), komodo: { profile: "p", server: "s", cliConfig: "/dev/null" }, bin: { km: "km", mutagen: "mutagen" } };
+const host = {
+	ssh: "stub-host",
+	remoteRoot: join(dir, "remote"),
+	komodo: { profile: "p", server: "s", cliConfig: "/dev/null" },
+	bin: { km: "km", mutagen: "mutagen" },
+};
 
 /** Peak heapUsed/RSS increase over a gc-settled baseline while `call` runs; its result stays referenced until sampling stops. */
 async function measure<T>(call: () => Promise<T>): Promise<{ value: T; heapPeakDelta: number; rssPeakDelta: number }> {
@@ -79,23 +84,49 @@ async function sha256(path: string): Promise<string> {
 if (row === "row1") {
 	const ignored = await measure(() => runModule.run(["emit"], { stdout: "ignore" }));
 	const flushed = await measure(() => mutagen.flush(host, "stub-session"));
-	console.log(JSON.stringify({
-		row, src, loadBytes: LOAD,
-		ignoreCall: { returned: describe(ignored.value), heapPeakDelta: ignored.heapPeakDelta, rssPeakDelta: ignored.rssPeakDelta },
-		mutagenFlush: { returned: describe(flushed.value), heapPeakDelta: flushed.heapPeakDelta, rssPeakDelta: flushed.rssPeakDelta },
-	}, null, 2));
+	console.log(
+		JSON.stringify(
+			{
+				row,
+				src,
+				loadBytes: LOAD,
+				ignoreCall: { returned: describe(ignored.value), heapPeakDelta: ignored.heapPeakDelta, rssPeakDelta: ignored.rssPeakDelta },
+				mutagenFlush: { returned: describe(flushed.value), heapPeakDelta: flushed.heapPeakDelta, rssPeakDelta: flushed.rssPeakDelta },
+			},
+			null,
+			2,
+		),
+	);
 } else if (row === "row2") {
 	const source = join(dir, "source.bin");
-	await Bun.write(source, new Uint8Array(LOAD).map((_, i) => (i * 2654435761) >>> 24));
+	await Bun.write(
+		source,
+		new Uint8Array(LOAD).map((_, i) => (i * 2654435761) >>> 24),
+	);
 	const target = join(host.remoteRoot, "nested", "target.bin");
 	const written = await measure(async () =>
-		remoteFiles.writeRemoteFile(host, target, baseline ? await Bun.file(source).bytes() : { kind: "file", path: source }));
+		remoteFiles.writeRemoteFile(host, target, baseline ? await Bun.file(source).bytes() : { kind: "file", path: source }),
+	);
 	const [sourceHash, targetHash] = await Promise.all([sha256(source), sha256(target)]);
-	console.log(JSON.stringify({
-		row, src, mode: baseline ? "bytes (base signature)" : "file source", loadBytes: LOAD,
-		returned: describe(written.value), heapPeakDelta: written.heapPeakDelta, rssPeakDelta: written.rssPeakDelta,
-		targetBytes: Bun.file(target).size, sourceSha256: sourceHash, targetSha256: targetHash, identical: sourceHash === targetHash,
-	}, null, 2));
+	console.log(
+		JSON.stringify(
+			{
+				row,
+				src,
+				mode: baseline ? "bytes (base signature)" : "file source",
+				loadBytes: LOAD,
+				returned: describe(written.value),
+				heapPeakDelta: written.heapPeakDelta,
+				rssPeakDelta: written.rssPeakDelta,
+				targetBytes: Bun.file(target).size,
+				sourceSha256: sourceHash,
+				targetSha256: targetHash,
+				identical: sourceHash === targetHash,
+			},
+			null,
+			2,
+		),
+	);
 } else {
 	const node = (script: string) => [process.execPath, "-e", script];
 	const outcome = async (call: () => Promise<unknown>) => {
@@ -108,19 +139,25 @@ if (row === "row1") {
 		}
 	};
 	const failing = node('process.stdout.write(" so "); process.stderr.write(" se "); process.exit(5)');
-	console.log(JSON.stringify({
-		row,
-		runSuccess: await outcome(() => runModule.run(node('process.stdout.write("out\\n")'))),
-		runNonZeroStderr: await outcome(() => runModule.run(failing)),
-		runNonZeroStdoutOnly: await outcome(() => runModule.run(node('process.stdout.write(" so "); process.exit(4)'))),
-		runResultNonZero: await outcome(() => runModule.runResult(failing)),
-		runResultSuccess: await outcome(() => runModule.runResult(node('process.stdout.write("a"); process.stderr.write("b")'))),
-		writeRemoteFileString: await outcome(async () => {
-			const target = join(host.remoteRoot, "s", "f.txt");
-			await remoteFiles.writeRemoteFile(host, target, "héllo\n");
-			return Bun.file(target).text();
-		}),
-		removeRemoteDir: await outcome(() => remoteFiles.removeRemoteDir(host, join(host.remoteRoot, "s"))),
-		sshFailure: await outcome(() => remoteFiles.writeRemoteFile(host, "/dev/null/x/y", "z")),
-	}, null, 2));
+	console.log(
+		JSON.stringify(
+			{
+				row,
+				runSuccess: await outcome(() => runModule.run(node('process.stdout.write("out\\n")'))),
+				runNonZeroStderr: await outcome(() => runModule.run(failing)),
+				runNonZeroStdoutOnly: await outcome(() => runModule.run(node('process.stdout.write(" so "); process.exit(4)'))),
+				runResultNonZero: await outcome(() => runModule.runResult(failing)),
+				runResultSuccess: await outcome(() => runModule.runResult(node('process.stdout.write("a"); process.stderr.write("b")'))),
+				writeRemoteFileString: await outcome(async () => {
+					const target = join(host.remoteRoot, "s", "f.txt");
+					await remoteFiles.writeRemoteFile(host, target, "héllo\n");
+					return Bun.file(target).text();
+				}),
+				removeRemoteDir: await outcome(() => remoteFiles.removeRemoteDir(host, join(host.remoteRoot, "s"))),
+				sshFailure: await outcome(() => remoteFiles.writeRemoteFile(host, "/dev/null/x/y", "z")),
+			},
+			null,
+			2,
+		),
+	);
 }
