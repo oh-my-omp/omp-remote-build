@@ -16,8 +16,7 @@
  * process state is what a tool batch of the current turn returned before the host persists the
  * batch's developer message; `turn_start` drops it.
  */
-import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import { buildSessionContext, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 /** What the model must know about this plugin's baseline tools now. */
 export type Delta = { readonly kind: "none" } | { readonly kind: "text"; readonly body: string };
