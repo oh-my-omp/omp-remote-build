@@ -80,8 +80,7 @@ export async function prepareEnv(root: string, config: RemoteBuildConfig): Promi
 	const host = await checkHost();
 	const id = envIdFor(root);
 	const remotePath = `${host.remoteRoot}/${id}`;
-	const session =
-		(await findSession(host, id)) ?? (await createSession(host, id, root, remotePath, await deriveIgnoreRules(root, config)));
+	const session = (await findSession(host, id)) ?? (await createSession(host, id, root, remotePath, await deriveIgnoreRules(root, config)));
 	await flush(host, session);
 	for (const [target, source] of Object.entries(config.containerFiles)) {
 		await writeRemoteFile(host, `${remotePath}/${target}`, { kind: "file", path: join(root, source) });

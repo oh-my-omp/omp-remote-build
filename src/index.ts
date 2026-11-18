@@ -1,19 +1,19 @@
+import type { Stats } from "node:fs";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import type { Stats } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { applyActiveTools } from "./active-tools.ts";
+import { applyActiveTools } from "../omomp-shared/active-tools.ts";
+import { createDeltaStream, type Delta } from "../omomp-shared/context-delta.ts";
+import { tr } from "../omomp-shared/i18n.ts";
 import { CONFIG_PATH, loadConfig } from "./config.ts";
 import { registerContainerTools } from "./container-tools.ts";
+import { humanErrorMessage, RemoteBuildError } from "./diagnostics.ts";
 import { checkHost, envIdFor, isMainCheckout, prepareEnv, worktreeRoot } from "./environment.ts";
 import { loadHost } from "./host.ts";
 import { registerInitTools } from "./init.ts";
-import { PREPARER_AGENT_NAME } from "./preparer.ts";
 import { findSession, flush } from "./mutagen.ts";
+import { PREPARER_AGENT_NAME } from "./preparer.ts";
 import type { EnvState, PreparedEnv, RemoteBuildConfig } from "./types.ts";
-import { tr } from "./i18n.ts";
-import { humanErrorMessage, RemoteBuildError } from "./diagnostics.ts";
-import { createDeltaStream, type Delta } from "./tool-delta.ts";
 
 /** `/worktree [branch]` and its registered name `/wt`. */
 const WORKTREE_COMMAND = /^\/(?:wt|worktree)(?:\s|$)/;
@@ -65,7 +65,7 @@ export default function remoteBuild(pi: ExtensionAPI) {
 
 	const begin = (root: string, config: RemoteBuildConfig): Promise<PreparedEnv> => {
 		const done = prepareEnv(root, config).then(
-			env => {
+			(env) => {
 				envs.set(root, { kind: "ready", env });
 				return env;
 			},
@@ -135,9 +135,9 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	/** Writes the active set with exactly `own` as this plugin's tools; no write when they already match, unless `force`. */
 	const writeOwnTools = async (own: ReadonlySet<string>, force: boolean): Promise<void> => {
 		const current = pi.getActiveTools();
-		const currentOwn = new Set(current.filter(name => name in PLUGIN_TOOLS));
-		if (!force && currentOwn.size === own.size && [...own].every(name => currentOwn.has(name))) return;
-		await applyActiveTools(pi, [...current.filter(name => !(name in PLUGIN_TOOLS)), ...own]);
+		const currentOwn = new Set(current.filter((name) => name in PLUGIN_TOOLS));
+		if (!force && currentOwn.size === own.size && [...own].every((name) => currentOwn.has(name))) return;
+		await applyActiveTools(pi, [...current.filter((name) => !(name in PLUGIN_TOOLS)), ...own]);
 	};
 
 	const startLifecycle = async (ctx: ExtensionContext, force: boolean): Promise<void> => {
@@ -152,13 +152,13 @@ export default function remoteBuild(pi: ExtensionAPI) {
 	const reconcile = async (ctx: ExtensionContext): Promise<Delta> => {
 		const availability = await availabilityFor(ctx);
 		const available = availableTools(availability);
-		if (available.some(name => !baseline.has(name))) {
+		if (available.some((name) => !baseline.has(name))) {
 			const widened = new Set([...baseline, ...available]);
 			await writeOwnTools(widened, false);
 			baseline = widened;
 		}
 		reconciledCwd = availability.cwd;
-		const unavailable = [...baseline].filter(name => !available.includes(name));
+		const unavailable = [...baseline].filter((name) => !available.includes(name));
 		return unavailable.length === 0 ? { kind: "none" } : { kind: "text", body: unavailableBody(unavailable, availability) };
 	};
 
@@ -191,12 +191,15 @@ export default function remoteBuild(pi: ExtensionAPI) {
 			try {
 				await checkHost();
 			} catch (error) {
-				ctx.ui.notify(`${tr("remote-build: build host check failed, worktree not created: ", "remote-build：构建主机检查失败，未创建 worktree：")}${humanErrorMessage(error)}`, "error");
+				ctx.ui.notify(
+					`${tr("remote-build: build host check failed, worktree not created: ", "remote-build：构建主机检查失败，未创建 worktree：")}${humanErrorMessage(error)}`,
+					"error",
+				);
 				return { handled: true };
 			}
 		}
 		void waitForMove(ctx, ctx.sessionManager.getCwd()).then(
-			async moved => {
+			async (moved) => {
 				if (source === undefined) return;
 				const root = await worktreeRoot(moved);
 				ctx.ui.setStatus("remote-build", `${tr("remote-build: preparing ", "remote-build：正在准备 ")}${root}`);
@@ -204,7 +207,10 @@ export default function remoteBuild(pi: ExtensionAPI) {
 					const env = await begin(root, source.config);
 					ctx.ui.notify(`${tr("remote-build: ready ", "remote-build：已就绪 ")}${env.container} <- ${root}`, "info");
 				} catch (error) {
-					ctx.ui.notify(`${tr("remote-build: environment failed for ", "remote-build：环境失败：")}${root}: ${humanErrorMessage(error)}`, "error");
+					ctx.ui.notify(
+						`${tr("remote-build: environment failed for ", "remote-build：环境失败：")}${root}: ${humanErrorMessage(error)}`,
+						"error",
+					);
 				} finally {
 					ctx.ui.setStatus("remote-build", undefined);
 				}
@@ -359,7 +365,8 @@ function isGitDirectory(gitdir: string): boolean | null {
 		if (lstatSync(head).isSymbolicLink()) return null;
 		text = readFileSync(head, "utf8");
 	} catch (error) {
-		if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR" || error.code === "EISDIR")) return false;
+		if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR" || error.code === "EISDIR"))
+			return false;
 		return null;
 	}
 	// Git validates the symbolic ref's `refs/` prefix, and for a detached HEAD
@@ -486,9 +493,7 @@ function unavailableBody(tools: readonly string[], availability: Availability): 
  * `getEntries()`, and record that the host offers no smaller entry point.
  */
 function isIsolatedSubagent(ctx: ExtensionContext): boolean {
-	return ctx.sessionManager
-		.getEntries()
-		.some(entry => entry.type === "session_init" && "isolated" in entry && entry.isolated === true);
+	return ctx.sessionManager.getEntries().some((entry) => entry.type === "session_init" && "isolated" in entry && entry.isolated === true);
 }
 
 /**

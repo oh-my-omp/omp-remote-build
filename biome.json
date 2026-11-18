@@ -1,0 +1,18 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"extends": ["./omomp-shared/biome.base.json"],
+	"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+	"files": {
+		"includes": [
+			"src/**/*.ts",
+			"omomp-shared/*.ts",
+			"omomp-shared/*.json",
+			"accept/**/*.ts",
+			"test/**/*.ts",
+			"biome.json",
+			"package.json",
+			"tsconfig.json",
+			"omomp-shared.json"
+		]
+	}
+}
