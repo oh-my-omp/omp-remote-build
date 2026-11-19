@@ -1,4 +1,4 @@
-import { open, type FileHandle } from "node:fs/promises";
+import { type FileHandle, open } from "node:fs/promises";
 import { RemoteBuildError } from "./diagnostics.ts";
 
 /**
@@ -65,7 +65,7 @@ async function spawn(
 		const [out, err, code] = await Promise.all([captured(proc.stdout), captured(proc.stderr), proc.exited]);
 		return { code, stdout: out, stderr: err };
 	} finally {
-		await Promise.all(handles.map(handle => handle.close()));
+		await Promise.all(handles.map((handle) => handle.close()));
 	}
 }
 
@@ -88,8 +88,11 @@ export type RunOptions = { readonly stdin?: StdinSource; readonly stderr?: Outpu
  * nothing back and allocates no buffer for it.
  */
 export function run(argv: readonly string[], options?: RunOptions & { readonly stdout?: "capture" }): Promise<string>;
-export function run(argv: readonly string[], options: RunOptions & { readonly stdout: Exclude<OutputSink, "capture"> }): Promise<void>;
-export async function run(argv: readonly string[], options: RunOptions & { readonly stdout?: OutputSink } = {}): Promise<string | void> {
+export function run(argv: readonly string[], options: RunOptions & { readonly stdout: Exclude<OutputSink, "capture"> }): Promise<undefined>;
+export async function run(
+	argv: readonly string[],
+	options: RunOptions & { readonly stdout?: OutputSink } = {},
+): Promise<string | undefined> {
 	const result = await spawn(argv, options.stdin, options.stdout ?? "capture", options.stderr ?? "capture");
 	if (result.code !== 0) {
 		const output = result.stderr?.trim() || result.stdout?.trim() || "";

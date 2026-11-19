@@ -79,7 +79,7 @@ async function isFile(path: string): Promise<boolean> {
 
 /** Literal base image of every build stage of `dockerfile`, in order. `ARG`-expanded bases are left to Docker. */
 export function stageBases(dockerfile: string): string[] {
-	return Array.from(dockerfile.matchAll(/^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)/gim), match => match[1]!);
+	return Array.from(dockerfile.matchAll(/^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)/gim), (match) => match[1]!);
 }
 
 /** Outcome of a project image build. */

@@ -8,8 +8,8 @@
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { deriveIgnoreRules } from "../src/ignores.ts";
 import { loadConfig } from "../src/config.ts";
+import { deriveIgnoreRules } from "../src/ignores.ts";
 import type { RemoteBuildConfig } from "../src/types.ts";
 
 const args = process.argv.slice(2);
@@ -17,10 +17,6 @@ const repoRoot = args[0];
 if (repoRoot === undefined) throw new Error("usage: driver.ts <repo-root> [--pattern-out <file>] [--label <s>]");
 const patternOut = args.includes("--pattern-out") ? args[args.indexOf("--pattern-out") + 1] : undefined;
 const label = args.includes("--label") ? args[args.indexOf("--label") + 1] : "run";
-
-interface ByteCounterChunk {
-	length: number;
-}
 
 // --- instrumentation: watch the plugin's own Bun.spawn git calls at the boundary
 // where ignores.ts sends bytes or BufferOptions stdin / reads stdout. ---
@@ -98,11 +94,18 @@ const configDir = join(repoRoot, ".omp");
 if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
 const configPath = join(configDir, "remote-build.json");
 if (!existsSync(configPath)) {
-	writeFileSync(configPath, JSON.stringify({
-		ignore: ["*.extra.log"],
-		include: ["keep.normal"],
-		containerFiles: {},
-	}, null, 2));
+	writeFileSync(
+		configPath,
+		JSON.stringify(
+			{
+				ignore: ["*.extra.log"],
+				include: ["keep.normal"],
+				containerFiles: {},
+			},
+			null,
+			2,
+		),
+	);
 }
 const config: RemoteBuildConfig | undefined = await loadConfig(repoRoot);
 if (config === undefined) throw new Error("loadConfig returned undefined for the load repo");
@@ -116,21 +119,27 @@ const after = process.memoryUsage().heapUsed;
 globalThis.gc();
 const settledAfter = process.memoryUsage().heapUsed;
 
-console.log(JSON.stringify({
-	label,
-	patternCount: result.patterns.length,
-	heapBefore: before,
-	heapAfter: after,
-	heapDelta: after - before,
-	heapAfterSettled: settledAfter,
-	settledDelta: settledAfter - before,
-	spawnCount,
-	stdinOptionBytes,
-	stdinPipeBytes,
-	stdoutBytes,
-	perSpawnLayer: { stdinTotal: stdinOptionBytes + stdinPipeBytes },
-}, null, 2));
+console.log(
+	JSON.stringify(
+		{
+			label,
+			patternCount: result.patterns.length,
+			heapBefore: before,
+			heapAfter: after,
+			heapDelta: after - before,
+			heapAfterSettled: settledAfter,
+			settledDelta: settledAfter - before,
+			spawnCount,
+			stdinOptionBytes,
+			stdinPipeBytes,
+			stdoutBytes,
+			perSpawnLayer: { stdinTotal: stdinOptionBytes + stdinPipeBytes },
+		},
+		null,
+		2,
+	),
+);
 
 if (patternOut !== undefined) {
-	writeFileSync(patternOut, result.patterns.join("\n\0") + "\n\0");
+	writeFileSync(patternOut, `${result.patterns.join("\n\0")}\n\0`);
 }

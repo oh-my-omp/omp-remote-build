@@ -1,7 +1,7 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { afterAll, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, expect, test } from "bun:test";
 import { deriveIgnoreRules } from "./ignores.ts";
 import type { RemoteBuildConfig } from "./types.js";
 
@@ -9,7 +9,7 @@ import type { RemoteBuildConfig } from "./types.js";
 const scratchRepos: string[] = [];
 
 afterAll(async () => {
-	await Promise.all(scratchRepos.map(path => rm(path, { force: true, recursive: true })));
+	await Promise.all(scratchRepos.map((path) => rm(path, { force: true, recursive: true })));
 });
 
 const ignoreOnlyConfig: RemoteBuildConfig = {
@@ -48,12 +48,12 @@ test("derivation negates exactly git's tracked-and-ignored set and nothing else"
 
 	const { patterns } = await deriveIgnoreRules(root, ignoreOnlyConfig);
 	// One negation per ignored tracked path:
-	expect(patterns.filter(pattern => pattern === "!/build/artifact.o").length).toBe(1);
-	expect(patterns.filter(pattern => pattern === "!/vendored/lib/dep.rs").length).toBe(1);
-	expect(patterns.filter(pattern => pattern === "!/space file.txt").length).toBe(1);
-	expect(patterns.filter(pattern => pattern === "!/err.log").length).toBe(1);
+	expect(patterns.filter((pattern) => pattern === "!/build/artifact.o").length).toBe(1);
+	expect(patterns.filter((pattern) => pattern === "!/vendored/lib/dep.rs").length).toBe(1);
+	expect(patterns.filter((pattern) => pattern === "!/space file.txt").length).toBe(1);
+	expect(patterns.filter((pattern) => pattern === "!/err.log").length).toBe(1);
 	// !keep.log un-negates: no per-path negation for it.
-	expect(patterns.filter(pattern => pattern === "!/keep.log").length).toBe(0);
+	expect(patterns.filter((pattern) => pattern === "!/keep.log").length).toBe(0);
 	// Tracked non-ignored files translate nothing.
-	expect(patterns.filter(pattern => pattern === "!/src/main.rs").length).toBe(0);
+	expect(patterns.filter((pattern) => pattern === "!/src/main.rs").length).toBe(0);
 });

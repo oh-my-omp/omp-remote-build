@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { humanErrorMessage, RemoteBuildError, renderDiagnostic, type Diagnostic } from "./diagnostics.ts";
+import { type Diagnostic, humanErrorMessage, RemoteBuildError, renderDiagnostic } from "./diagnostics.ts";
 import { run } from "./run.ts";
 
 const originalLanguage = process.env.OMOMP_LANG;
@@ -28,8 +28,9 @@ test("unknown external payloads remain data", () => {
 test("every diagnostic branch renders in English and Chinese without losing context", () => {
 	const diagnostics: Diagnostic[] = [
 		{ kind: "host-read", path: "/tmp/host.json", detail: "external" },
-		...(["object", "text", "unknown", "absolute", "host-absolute", "strings", "single-line"] as const).map(reason =>
-			({ kind: "config-field", path: "/tmp/config", field: "field", reason }) satisfies Diagnostic),
+		...(["object", "text", "unknown", "absolute", "host-absolute", "strings", "single-line"] as const).map(
+			(reason) => ({ kind: "config-field", path: "/tmp/config", field: "field", reason }) satisfies Diagnostic,
+		),
 		{ kind: "config-relative", path: "/tmp/config", field: "include", value: "../bad" },
 		{ kind: "config-image-source", path: "/tmp/config" },
 		{ kind: "km-config-read", path: "/tmp/km.toml" },
@@ -42,30 +43,37 @@ test("every diagnostic branch renders in English and Chinese without losing cont
 		{ kind: "komodo-shape", field: "payload", expected: "boolean" },
 		{ kind: "komodo-shape", field: "payload", expected: "number" },
 		{ kind: "komodo-shape", field: "payload", expected: "array" },
-		{ kind: "komodo-variant", variant: "image" }, { kind: "komodo-variant", variant: "update" },
+		{ kind: "komodo-variant", variant: "image" },
+		{ kind: "komodo-variant", variant: "update" },
 		{ kind: "komodo-network", operation: "ListServers", host: "https://example.invalid" },
 		{ kind: "komodo-http", operation: "ListServers", status: 401 },
 		{ kind: "komodo-http", operation: "ListServers", status: 403 },
 		{ kind: "komodo-http", operation: "ListServers", status: 500 },
 		{ kind: "komodo-json", operation: "ListServers" },
-		{ kind: "komodo-value", reason: "shell" }, { kind: "komodo-value", reason: "command" },
-		{ kind: "komodo-value", reason: "name" }, { kind: "komodo-value", reason: "image" },
-		{ kind: "komodo-value", reason: "workdir" }, { kind: "komodo-value", reason: "volume" },
+		{ kind: "komodo-value", reason: "shell" },
+		{ kind: "komodo-value", reason: "command" },
+		{ kind: "komodo-value", reason: "name" },
+		{ kind: "komodo-value", reason: "image" },
+		{ kind: "komodo-value", reason: "workdir" },
+		{ kind: "komodo-value", reason: "volume" },
 		{ kind: "komodo-value", reason: "env" },
 		{ kind: "deployment-timeout", deployment: "rb-test", update: "update-id" },
 		{ kind: "deployment-failed", deployment: "rb-test", update: "update-id" },
 		{ kind: "deployment-not-running", deployment: "rb-test", state: "created" },
-		{ kind: "container-aborted", name: "rb-test" }, { kind: "container-disappeared", name: "rb-test" },
+		{ kind: "container-aborted", name: "rb-test" },
+		{ kind: "container-disappeared", name: "rb-test" },
 		{ kind: "container-timeout", name: "rb-test", minutes: 30 },
 		{ kind: "command-exit", command: "ssh", code: 7, output: "external" },
 		{ kind: "ignore-command", command: "config", code: 7, output: "external" },
-		{ kind: "ignore-response", reason: "unterminated" }, { kind: "ignore-response", reason: "verbose" },
+		{ kind: "ignore-response", reason: "unterminated" },
+		{ kind: "ignore-response", reason: "verbose" },
 		{ kind: "ignore-read", path: "/tmp/.gitignore" },
 		{ kind: "ignore-pattern", path: "/tmp/.gitignore", reason: "escape" },
 		{ kind: "ignore-pattern", path: "/tmp/.gitignore", reason: "class" },
 		{ kind: "ignore-pattern", path: "/tmp/.gitignore", reason: "unclosed" },
 		{ kind: "mutagen-duplicate", label: "rb-env=test", ids: ["one", "two"] },
-		{ kind: "mutagen-missing", id: "test" }, { kind: "move-timeout" },
+		{ kind: "mutagen-missing", id: "test" },
+		{ kind: "move-timeout" },
 	];
 	for (const diagnostic of diagnostics) {
 		const en = renderDiagnostic(diagnostic, "en");
@@ -80,7 +88,9 @@ test("actual command failures retain output and localize only notification prose
 	let caught: unknown;
 	try {
 		await run([process.execPath, "-e", 'process.stderr.write("external stderr"); process.exit(7)']);
-	} catch (error) { caught = error; }
+	} catch (error) {
+		caught = error;
+	}
 	expect(caught).toBeInstanceOf(RemoteBuildError);
 	process.env.OMOMP_LANG = "zh";
 	expect(humanErrorMessage(caught)).toContain("以退出码 7 结束：external stderr");

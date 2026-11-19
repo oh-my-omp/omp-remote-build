@@ -120,8 +120,11 @@ function inspectDoc(running: boolean, status: string, exitCode: number): unknown
 			FinishedAt: running ? "0001-01-01T00:00:00Z" : "2026-11-07T10:00:01.000000000Z",
 		},
 		Config: {
-			Hostname: "rb-test", Env: ["PATH=/usr/bin"], Cmd: ["sleep", "infinity"],
-			Image: "img:test", Labels: { "com.docker.compose.project": "rb", pad: "x".repeat(1024) },
+			Hostname: "rb-test",
+			Env: ["PATH=/usr/bin"],
+			Cmd: ["sleep", "infinity"],
+			Image: "img:test",
+			Labels: { "com.docker.compose.project": "rb", pad: "x".repeat(1024) },
 		},
 		Mounts: [{ Type: "bind", Source: "/srv/remote-build/test", Destination: "/workspace", pad: "y".repeat(1024) }],
 		NetworkSettings: { IPAddress: "172.17.0.2", Ports: {}, Networks: { bridge: { pad: "z".repeat(1024) } } },
@@ -134,7 +137,11 @@ function inspectDoc(running: boolean, status: string, exitCode: number): unknown
  * `inspected` supplies the inspect answer the light build falls back to for a
  * Core `unknown` state.
  */
-function statusExpectations(state: string, exitCode = 0, inspected?: { readonly running: boolean; readonly status: string }): Expectation[] {
+function statusExpectations(
+	state: string,
+	exitCode = 0,
+	inspected?: { readonly running: boolean; readonly status: string },
+): Expectation[] {
 	if (EXPECT_LIGHT) {
 		if (state === "absent") {
 			return [{ type: "GetDeploymentContainer", respond: () => http500(`Did not find any Deployment matching rb-test-abcdef1234`) }];
@@ -146,12 +153,19 @@ function statusExpectations(state: string, exitCode = 0, inspected?: { readonly 
 		return [head];
 	}
 	if (state === "absent" || state === "not_deployed") {
-		return [{ type: "InspectDockerContainer", respond: () => http500(`Error response from daemon: No such container: rb-test-abcdef1234`) }];
+		return [
+			{ type: "InspectDockerContainer", respond: () => http500(`Error response from daemon: No such container: rb-test-abcdef1234`) },
+		];
 	}
 	if (state === "unknown" && inspected !== undefined) {
 		return [{ type: "InspectDockerContainer", respond: () => inspectDoc(inspected.running, inspected.status, exitCode) }];
 	}
-	return [{ type: "InspectDockerContainer", respond: () => inspectDoc(state === "running" || state === "paused" || state === "restarting", state, exitCode) }];
+	return [
+		{
+			type: "InspectDockerContainer",
+			respond: () => inspectDoc(state === "running" || state === "paused" || state === "restarting", state, exitCode),
+		},
+	];
 }
 
 /** `GetDeploymentContainer` on paths that always used it (ensureContainer). */
@@ -164,7 +178,11 @@ const serverExpectation: Expectation = {
 	respond: () => ({ _id: { $oid: "server-oid-1" } }),
 };
 
-const update = (status: "Queued" | "Complete") => ({ _id: { $oid: UPDATE_ID }, status, ...(status === "Complete" ? { success: true } : {}) });
+const update = (status: "Queued" | "Complete") => ({
+	_id: { $oid: UPDATE_ID },
+	status,
+	...(status === "Complete" ? { success: true } : {}),
+});
 
 const stub = Bun.serve({
 	port: 0,
@@ -281,11 +299,7 @@ async function scenarioRunOnce(): Promise<void> {
 }
 
 async function scenarioRunOnceGone(): Promise<void> {
-	scenario("runOnce/disappeared", [
-		...runOncePrologue(),
-		...statusExpectations("running"),
-		...statusExpectations("not_deployed"),
-	]);
+	scenario("runOnce/disappeared", [...runOncePrologue(), ...statusExpectations("running"), ...statusExpectations("not_deployed")]);
 
 	let thrown: unknown;
 	try {
@@ -295,8 +309,11 @@ async function scenarioRunOnceGone(): Promise<void> {
 	}
 	finishScenario("runOnce/disappeared");
 	check("threw", thrown !== undefined, "no error");
-	check("container-disappeared", thrown instanceof RemoteBuildError && thrown.diagnostic.kind === "container-disappeared",
-		thrown instanceof Error ? thrown.message : String(thrown));
+	check(
+		"container-disappeared",
+		thrown instanceof RemoteBuildError && thrown.diagnostic.kind === "container-disappeared",
+		thrown instanceof Error ? thrown.message : String(thrown),
+	);
 	check("no log read", !requests.some((request) => request.type === "GetContainerLog"), "log requested");
 }
 
@@ -326,7 +343,11 @@ async function scenarioEnsure(): Promise<void> {
 	]);
 	await ensureContainer(host, serviceSpec, "ensure");
 	finishScenario("ensure/matched+created");
-	check("deploy issued", requests.some((request) => request.type === "Deploy"), "no deploy");
+	check(
+		"deploy issued",
+		requests.some((request) => request.type === "Deploy"),
+		"no deploy",
+	);
 
 	// C: no existing deployment → create + deploy.
 	scenario("ensure/fresh", [
@@ -339,7 +360,11 @@ async function scenarioEnsure(): Promise<void> {
 	]);
 	await ensureContainer(host, serviceSpec, "ensure");
 	finishScenario("ensure/fresh");
-	check("create issued", requests.some((request) => request.type === "CreateDeployment"), "no create");
+	check(
+		"create issued",
+		requests.some((request) => request.type === "CreateDeployment"),
+		"no create",
+	);
 }
 
 // --- run ----------------------------------------------------------------------
@@ -363,5 +388,3 @@ async function main(): Promise<void> {
 }
 
 await main();
-
-export {};

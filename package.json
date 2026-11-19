@@ -1,50 +1,57 @@
 {
-  "name": "omp-remote-build",
-  "version": "0.1.24",
-  "description": "omp plugin: per-worktree Mutagen replica to a remote Docker host with a Komodo-managed build/test container and container PTY tools.",
-  "keywords": [
-    "omp",
-    "oh-my-pi",
-    "mutagen",
-    "komodo",
-    "remote-build"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/oh-my-omp/omp-remote-build.git"
-  },
-  "type": "module",
-  "files": [
-    "src",
-    "!src/**/*.test.ts",
-    "images",
-    "examples",
-    "README.md",
-    "README.zh-CN.md",
-    "CHANGELOG.md",
-    "LICENSE"
-  ],
-  "omp": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "omomp": {
-    "changelog": "CHANGELOG.md"
-  },
-  "peerDependencies": {
-    "omp-unified-exec": "*"
-  },
-  "peerDependenciesMeta": {
-    "omp-unified-exec": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
-    "@oh-my-pi/pi-coding-agent": "latest",
-    "@types/bun": "latest",
-    "omp-unified-exec": "github:oh-my-omp/omp-unified-exec",
-    "typescript": "^5.7.3"
-  }
+	"name": "omp-remote-build",
+	"version": "0.1.25",
+	"description": "omp plugin: per-worktree Mutagen replica to a remote Docker host with a Komodo-managed build/test container and container PTY tools.",
+	"keywords": [
+		"omp",
+		"oh-my-pi",
+		"mutagen",
+		"komodo",
+		"remote-build"
+	],
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/oh-my-omp/omp-remote-build.git"
+	},
+	"type": "module",
+	"files": [
+		"src",
+		"!src/**/*.test.ts",
+		"omomp-shared",
+		"images",
+		"examples",
+		"README.md",
+		"README.zh-CN.md",
+		"CHANGELOG.md",
+		"LICENSE"
+	],
+	"omp": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"omomp": {
+		"changelog": "CHANGELOG.md"
+	},
+	"peerDependencies": {
+		"omp-unified-exec": "*"
+	},
+	"peerDependenciesMeta": {
+		"omp-unified-exec": {
+			"optional": true
+		}
+	},
+	"scripts": {
+		"check": "biome check . && tsc --noEmit",
+		"test": "bun test"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "latest",
+		"@oh-my-pi/pi-agent-core": "latest",
+		"@oh-my-pi/pi-coding-agent": "latest",
+		"@types/bun": "latest",
+		"omp-unified-exec": "github:oh-my-omp/omp-unified-exec",
+		"typescript": "latest"
+	}
 }

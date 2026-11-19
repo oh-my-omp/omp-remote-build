@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
-import { z } from "@oh-my-pi/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { CONFIG_PATH, GENERATED_DOCKERFILE, PREPARER_REPORT, loadConfig, publishPreparedImage, readPreparerReport } from "./config.ts";
+import { z } from "@oh-my-pi/pi-coding-agent";
+import { tr } from "../omomp-shared/i18n.ts";
+import { CONFIG_PATH, GENERATED_DOCKERFILE, loadConfig, PREPARER_REPORT, publishPreparedImage, readPreparerReport } from "./config.ts";
 import { envContainerSpec, mainCheckout, projectIdFor } from "./environment.ts";
 import { ensureContainer, imageExists, runOnce } from "./komodo.ts";
 import { flush } from "./mutagen.ts";
@@ -19,7 +20,6 @@ import {
 } from "./project.ts";
 import { readRemoteFile, removeRemoteDir, writeRemoteFile } from "./remote-files.ts";
 import type { DockerfileRef, ImageSource, OnceResult, PreparedEnv, RemoteBuildConfig } from "./types.ts";
-import { tr } from "./i18n.ts";
 
 const BOOTSTRAP_TIMEOUT_MS = 30 * 60_000;
 
@@ -94,7 +94,7 @@ type Report = Partial<Record<(typeof REPORT_KEYS)[number], ReportField>>;
 /** `key:` followed by the output tail in a fence longer than any backtick run inside it. */
 function tailBlock(key: string, text: string): string {
 	const tail = outputTail(text);
-	const longest = Math.max(0, ...Array.from(tail.matchAll(/`+/g), match => match[0].length));
+	const longest = Math.max(0, ...Array.from(tail.matchAll(/`+/g), (match) => match[0].length));
 	const fence = "`".repeat(Math.max(3, longest + 1));
 	return `${key}:\n${fence}\n${tail}\n${fence}`;
 }
@@ -172,7 +172,10 @@ async function prepare(
 	if (run.result !== "success") {
 		throw new Error(`the preparer reported result: ${run.result}; nothing was published`);
 	}
-	const [dockerfile, bootstrap] = await Promise.all([readRemoteFile(env.host, `${dir}/Dockerfile`), readRemoteFile(env.host, `${dir}/bootstrap`)]);
+	const [dockerfile, bootstrap] = await Promise.all([
+		readRemoteFile(env.host, `${dir}/Dockerfile`),
+		readRemoteFile(env.host, `${dir}/bootstrap`),
+	]);
 	if (dockerfile === undefined || bootstrap === undefined) {
 		throw new Error("the preparer reported success without a successful remote_env_build_image; nothing was published");
 	}
@@ -196,7 +199,8 @@ async function initEnvironment(
 ): Promise<string> {
 	const { host } = prepared;
 	const report: Report = { worktree: { kind: "line", value: prepared.root } };
-	const phase = (name: string, nameZh: string) => ctx.ui.setStatus("remote-build", tr(`remote-build: init ${name}`, `remote-build：初始化${nameZh}`));
+	const phase = (name: string, nameZh: string) =>
+		ctx.ui.setStatus("remote-build", tr(`remote-build: init ${name}`, `remote-build：初始化${nameZh}`));
 	try {
 		phase("sync", "同步");
 		await flush(host, prepared.mutagenSession);
@@ -243,7 +247,8 @@ async function initEnvironment(
 						{ contextPath: env.remotePath, dockerfile: dockerfile.path, text: dockerfile.text },
 						signal,
 					);
-					if (build.base !== "unused") report.base_image = { kind: "line", value: `${BASE_IMAGE} (${build.base === "present" ? "present" : "built now"})` };
+					if (build.base !== "unused")
+						report.base_image = { kind: "line", value: `${BASE_IMAGE} (${build.base === "present" ? "present" : "built now"})` };
 					report.build_output_tail = { kind: "tail", text: build.result.output };
 					if (build.result.exitCode !== 0) throw new Error(`image build failed (exit ${build.result.exitCode})`);
 				}
@@ -290,7 +295,8 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 		name: "remote_env_init",
 		defaultInactive: true,
 		label: tr("Remote env init", "远程环境初始化"),
-		description: "Prepare this worktree's remote build container and return an initialization report.\n\nTopics — read the one a call needs before making it:\n- `xd://remote_env_init/usage` — before initializing, rebuilding, or recreating a worktree environment",
+		description:
+			"Prepare this worktree's remote build container and return an initialization report.\n\nTopics — read the one a call needs before making it:\n- `xd://remote_env_init/usage` — before initializing, rebuilding, or recreating a worktree environment",
 		docTopics: () => ({ usage: readFileSync(new URL("./topics/remote_env_init/usage.md", import.meta.url), "utf8") }),
 		parameters: initSchema,
 		async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
@@ -309,7 +315,8 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 		name: "remote_env_build_image",
 		defaultInactive: true,
 		label: tr("Remote env build image", "远程环境构建镜像"),
-		description: "Build a candidate project image and run bootstrap for the preparer subagent.\n\nTopics — read the one a call needs before making it:\n- `xd://remote_env_build_image/usage` — before building a candidate or publishing the preparer's final report",
+		description:
+			"Build a candidate project image and run bootstrap for the preparer subagent.\n\nTopics — read the one a call needs before making it:\n- `xd://remote_env_build_image/usage` — before building a candidate or publishing the preparer's final report",
 		docTopics: () => ({ usage: readFileSync(new URL("./topics/remote_env_build_image/usage.md", import.meta.url), "utf8") }),
 		parameters: buildSchema,
 		async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
@@ -331,7 +338,13 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 			const image = projectImage(pid, sha256(dockerfile));
 			const dir = prepareDir(env.host, env.id);
 			await writeRemoteFile(env.host, `${dir}/build/Dockerfile`, dockerfile);
-			const build = await buildProjectImage(env.host, env.id, image, { contextPath: `${dir}/build`, dockerfile: "Dockerfile", text: dockerfile }, signal);
+			const build = await buildProjectImage(
+				env.host,
+				env.id,
+				image,
+				{ contextPath: `${dir}/build`, dockerfile: "Dockerfile", text: dockerfile },
+				signal,
+			);
 			const lines = [
 				`image: ${image} ${build.result.exitCode === 0 ? "built" : `build failed (exit ${build.result.exitCode})`}`,
 				tailBlock("build_output_tail", build.result.output),
@@ -347,7 +360,9 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 			}
 			await writeRemoteFile(env.host, `${dir}/Dockerfile`, dockerfile);
 			await writeRemoteFile(env.host, `${dir}/bootstrap`, bootstrap ?? "");
-			lines.push(`candidate: this Dockerfile and bootstrap are published to ${GENERATED_DOCKERFILE} and ${CONFIG_PATH} when your final report has result: success`);
+			lines.push(
+				`candidate: this Dockerfile and bootstrap are published to ${GENERATED_DOCKERFILE} and ${CONFIG_PATH} when your final report has result: success`,
+			);
 			const text = lines.join("\n");
 			return { content: [{ type: "text", text }], details: { report: text } };
 		},
