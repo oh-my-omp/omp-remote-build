@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { deriveIgnoreRules } from "./ignores.ts";
 import type { RemoteBuildConfig } from "./types.js";
 
-/** Repos created per test; removed once all tests finish. */
 const scratchRepos: string[] = [];
 
 afterAll(async () => {
@@ -47,13 +46,10 @@ test("derivation negates exactly git's tracked-and-ignored set and nothing else"
 	await Bun.spawn(["git", "-C", root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"]).exited;
 
 	const { patterns } = await deriveIgnoreRules(root, ignoreOnlyConfig);
-	// One negation per ignored tracked path:
 	expect(patterns.filter((pattern) => pattern === "!/build/artifact.o").length).toBe(1);
 	expect(patterns.filter((pattern) => pattern === "!/vendored/lib/dep.rs").length).toBe(1);
 	expect(patterns.filter((pattern) => pattern === "!/space file.txt").length).toBe(1);
 	expect(patterns.filter((pattern) => pattern === "!/err.log").length).toBe(1);
-	// !keep.log un-negates: no per-path negation for it.
 	expect(patterns.filter((pattern) => pattern === "!/keep.log").length).toBe(0);
-	// Tracked non-ignored files translate nothing.
 	expect(patterns.filter((pattern) => pattern === "!/src/main.rs").length).toBe(0);
 });

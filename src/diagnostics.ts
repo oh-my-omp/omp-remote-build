@@ -1,6 +1,5 @@
 import { type Language, language } from "../omomp-shared/i18n.ts";
 
-/** Plugin-owned prose stays structured until a human notification is generated. */
 export type Diagnostic =
 	| { readonly kind: "host-read"; readonly path: string; readonly detail: string }
 	| {
@@ -252,7 +251,6 @@ export class RemoteBuildError extends Error {
 	}
 }
 
-/** Unknown upstream payloads remain opaque data; only owned diagnostics are translated. */
 export function humanErrorMessage(error: unknown): string {
 	return error instanceof RemoteBuildError
 		? renderDiagnostic(error.diagnostic, language())

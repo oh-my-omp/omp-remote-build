@@ -1,16 +1,3 @@
-/**
- * #20 acceptance driver: `prepareEnv` (src/environment.ts) transferring containerFiles under a 64 MiB load.
- *
- * Usage: bun --expose-gc accept/container-files.ts <row1|row2> --src <plugin src dir>
- *   --src  the checkout under test (head or base), so one driver measures both
- *   row1   containerFiles = a 64 MiB file and a small one; peak heap/RSS of prepareEnv, remote bytes compared
- *   row2   containerFiles = small, missing, small; prepareEnv must reject before the missing file's ssh
- *
- * Nothing outside a fresh temp dir is touched: the omp agent dir (host config) is
- * PI_CODING_AGENT_DIR=<tmp>/agent; stubs first on PATH log every argv to <tmp>/calls.log:
- * `ssh [-o …] <host> <cmd>` runs <cmd> under `sh -c` locally, `mutagen sync list/create/flush`
- * keeps one session id in <tmp>/session; a local HTTP Komodo Core stub answers ListServers.
- */
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -25,8 +12,6 @@ const src = srcIndex >= 0 ? args[srcIndex + 1] : undefined;
 if ((row !== "row1" && row !== "row2") || src === undefined)
 	throw new Error("usage: container-files.ts <row1|row2> --src <plugin src dir>");
 
-// The agent dir and executable lookup are fixed at process start, so the driver
-// prepares the sandbox, then re-runs itself with PATH and PI_CODING_AGENT_DIR set.
 const sandbox = process.env.RB_ACCEPT20_DIR;
 if (sandbox === undefined) {
 	const dir = await mkdtemp(join(tmpdir(), "rb-accept20-"));
@@ -105,7 +90,6 @@ for (const argv of [
 	if ((await Bun.spawn(["git", "-C", root, ...argv], { stdout: "ignore" }).exited) !== 0) throw new Error(`git ${argv.join(" ")} failed`);
 }
 
-// Runtime-selected checkout (--src): the same driver measures the base and the head.
 const environment = await import(join(src, "environment.ts"));
 const configModule = await import(join(src, "config.ts"));
 const config = await configModule.loadConfig(root);

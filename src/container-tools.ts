@@ -65,14 +65,10 @@ function transportState(session: ExecSession): TransportState {
 	return session.hasExited ? { status: "exited", km_exit_code: session.exitCode, signal: session.signal } : { status: "running" };
 }
 
-/** What one tool result shows of the session's output. */
 interface Observed {
 	readonly text: string;
-	/** Always 0 for terminal screens; retained in the container tool result shape. */
 	readonly omittedBytes: number;
-	/** `unchanged`: the tty screen is exactly as last reported. */
 	readonly screen: "changed" | "unchanged";
-	/** Scrolled-off rows were evicted from the emulator history before being reported; they are only in the log. */
 	readonly historyMayBeTruncated: boolean;
 }
 
@@ -132,7 +128,6 @@ function sessionResult(session: ExecSession, seen: Observed): AgentToolResult<Se
 	return { content: [{ type: "text", text: lines.join("\n") }], details };
 }
 
-/** Stream parsed screen changes without consuming poll observations. */
 function streamScreen(session: ExecSession, onUpdate: AgentToolUpdateCallback<SessionDetails>): { stop(): void } {
 	let lastEmitAt = 0;
 	let timer: NodeJS.Timeout | undefined;
@@ -175,8 +170,6 @@ async function collectSession(
 	const stream = onUpdate ? streamScreen(session, onUpdate) : undefined;
 	try {
 		const result = sessionResult(session, observed(await session.collect({ deadlineMs: Date.now() + yieldMs, externalAbort: signal })));
-		// §K2: the result carries the final screen (collect already awaited the
-		// freeze), so removing here cannot lose it; remove() releases the terminal.
 		if (session.hasExited && session.outputClosed.isClosed) store.remove(session.id);
 		return result;
 	} finally {
@@ -190,10 +183,6 @@ function sendInput(session: ExecSession, input: string | undefined): void {
 	}
 }
 
-/**
- * `graceful`: SIGTERM, then SIGKILL after 2 s (container_kill_session).
- * `immediate`: SIGKILL at once, because omp aborts session_shutdown handlers after 2 s.
- */
 async function terminateSession(session: ExecSession, mode: "graceful" | "immediate"): Promise<void> {
 	switch (mode) {
 		case "graceful":
@@ -212,7 +201,6 @@ async function terminateSession(session: ExecSession, mode: "graceful" | "immedi
 		);
 }
 
-/** Register one agent-session-owned PTY store on top of omp-unified-exec's PTY sessions. */
 export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => Promise<PreparedEnv>): void {
 	const store = new SessionStore({ maxSessions: 64, lruProtectedCount: 8 });
 	let lifecycle: "active" | "shutdown" = "active";

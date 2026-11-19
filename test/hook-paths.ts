@@ -1,45 +1,3 @@
-/**
- * Acceptance harness for issue #21: the per-turn hook path (`before_agent_start`
- * → `syncActiveTools` → `projectConfig`) must not spawn a child process, and
- * `isIsolatedSubagent` must keep its "any `session_init` with `isolated`"
- * judgment (the host's read-only surface offers no smaller entry, recorded in
- * `src/index.ts`).
- *
- * Loads the plugin's real default export from the checkout given as argv[1],
- * registers it against a stub `pi` API, then drives the captured handlers with
- * realistic `ExtensionContext`s whose `sessionManager` stub counts the entry
- * materializations each judgment performs.
- *
- * Hermetic by construction: `PI_CODING_AGENT_DIR` points at a fixture agent dir
- * holding a host config whose Komodo endpoint is `http://127.0.0.1:1` (instant
- * ECONNREFUSED), whose `mutagen`/`km` binaries are exit-0 stubs, and whose `ssh`
- * target is an unresolvable fixture hostname (`stub-host`), so the real ssh
- * binary fails in local name resolution without reaching any host. Nothing
- * consults the machine's real host config, a reachable Komodo, or a Mutagen
- * daemon. (A runtime `PATH` override is not used for stubbing: Bun.spawn
- * resolves programs from the process's launch PATH.)
- *
- * Bounded by construction: every scenario runs under a hard wall-clock budget and
- * a scenario that overruns exits non-zero instead of hanging; the awaits that
- * depend on the plugin's fire-and-forget work gate on an observed event with a
- * deadline, never on a blind sleep; the process exits explicitly so a pending
- * plugin timer cannot hold the harness open.
- *
- * Usage:
- *   EXPECT_LIGHT=0 bun test/hook-paths.ts <checkout>   # baseline: behavior + spawn census
- *   bun test/hook-paths.ts <checkout>                  # additionally asserts the fix's goals
- *
- * Scenarios (issue #21 acceptance rows 1-4):
- *   1. 24 turns x 4 cwds (opted-in main checkout, linked worktree, nested repo,
- *      non-git dir) through `before_agent_start`: spawn census = 0;
- *   2. edge matrix: non-git dir, dead gitfile, symlinked cwd; active sets per
- *      fixture identical to the pre-change verdicts;
- *   3. isolated judgment over four session shapes plus a non-subagent context,
- *      recording `getEntries`/`getChildren`/`getTree` per judgment;
- *   4. `/worktree` in and outside an opted-in project: the host check runs only
- *      inside (ssh spawn observed) and `session_start` branches on the isolated
- *      flag (ssh only for the isolated subagent).
- */
 import { execFileSync } from "node:child_process";
 import { mkdirSync as mkdir, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,16 +9,11 @@ const ROOT = process.argv[2];
 if (ROOT === undefined) throw new Error("usage: bun test/hook-paths.ts <checkout>");
 
 const CONFIG_PATH = ".omp/remote-build.json";
-/** Turns evaluated per fixture in scenario 1. */
 const TURNS = 24;
-/** Wall-clock budget per scenario; exceeding it is a harness failure, never a hang. */
 const SCENARIO_BUDGET_MS = 30_000;
-/** Deadline for observing the plugin's fire-and-forget work in a gated await. */
 const OBSERVE_DEADLINE_MS = 10_000;
 const CONTAINER = ["container_exec", "container_write_stdin", "container_list_sessions", "container_kill_session"];
 const PROJECT_CONFIG = { workdir: "/workspace", shell: "bash", ignore: ["*.log"], env: { CARGO_TARGET_DIR: "/workspace/target" } };
-
-// --- fixture root and hermetic host environment ------------------------------
 
 const fixtureRoot = join(tmpdir(), `rb21-${process.pid}-${Date.now().toString(36)}`);
 const binDir = join(fixtureRoot, "bin");
@@ -68,7 +21,6 @@ const agentDir = join(fixtureRoot, "agent");
 mkdirSync(binDir, { recursive: true });
 mkdirSync(agentDir, { recursive: true });
 
-/** Exit-0 stubs for the binaries the plugin launches by absolute path. */
 function stub(name: string): string {
 	const path = join(binDir, name);
 	writeFileSync(path, "#!/bin/sh\nexit 0\n");
@@ -77,8 +29,6 @@ function stub(name: string): string {
 }
 stub("mutagen");
 stub("km");
-// The plugin resolves `<agent dir>/remote-build.json` through the host package;
-// point it at a fixture dir so the machine's real build host is never consulted.
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
 const kmCliConfig = join(fixtureRoot, "komodo.cli.toml");
@@ -92,8 +42,6 @@ writeFileSync(
 		bin: { km: join(binDir, "km"), mutagen: join(binDir, "mutagen") },
 	}),
 );
-
-// --- spawn census ------------------------------------------------------------
 
 interface SpawnRecord {
 	readonly program: string;
@@ -113,10 +61,7 @@ const resetSpawns = (): void => {
 	spawns = [];
 };
 const spawnedProgram = (program: string): boolean => spawns.some((record) => record.program === program);
-/** True when a `git` call carried `flag` (e.g. `--git-common-dir` from `mainCheckout`). */
 const spawnedGitWith = (flag: string): boolean => spawns.some((record) => record.program === "git" && record.args.includes(flag));
-
-// --- git fixtures ------------------------------------------------------------
 
 const git = (repo: string, ...argv: string[]): string => execFileSync("git", ["-C", repo, ...argv], { encoding: "utf8" });
 
@@ -134,8 +79,6 @@ function writeConfig(at: string): void {
 	mkdirSync(join(at, ".omp"), { recursive: true });
 	writeFileSync(join(at, CONFIG_PATH), JSON.stringify(PROJECT_CONFIG));
 }
-
-// --- stub pi API + realistic sessionManager stub ------------------------------
 
 interface Registered {
 	readonly handlers: Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>;
@@ -174,7 +117,6 @@ function makePi(): Registered {
 	return registered;
 }
 
-/** Entry shapes the judgment scans; `isolated` marks a session_init contract. */
 interface TreeSpec {
 	readonly entries: { id: string; parentId: string | null; type: string; isolated?: boolean }[];
 }
@@ -194,17 +136,9 @@ interface HarnessCtx {
 	readonly ctx: ExtensionContext;
 	readonly counts: CtxCounts;
 	readonly notifications: Notification[];
-	/** Resolves once `getCwd` has reported a move; never resolves without `moveTo`. */
 	readonly movedSeen: Promise<void>;
 }
 
-/**
- * A context whose `sessionManager` mirrors the host's replica-allocating reads
- * (`getEntries` returns a fresh array, `getChildren`/`getTree` fresh arrays).
- * With `moveTo`, the first `getCwd` reports `cwd` (the `/worktree` waiter's
- * "before" value) and every later call reports `moveTo`, so the waiter resolves
- * on its first tick instead of polling for its ten-minute timeout.
- */
 function makeCtx(opts: { cwd: string; tree?: TreeSpec; subagent?: boolean; moveTo?: string }): HarnessCtx {
 	const tree: Record<string, { parentId: string | null; type: string; isolated?: boolean }> = {};
 	for (const entry of opts.tree?.entries ?? []) tree[entry.id] = { parentId: entry.parentId, type: entry.type, isolated: entry.isolated };
@@ -261,10 +195,7 @@ function makeCtx(opts: { cwd: string; tree?: TreeSpec; subagent?: boolean; moveT
 	return { ctx: context, counts, notifications, movedSeen };
 }
 
-// the plugin loads after the hermetic environment is in place
 const { default: plugin } = (await import(`${ROOT}/src/index.ts`)) as { default: (pi: ExtensionAPI) => void };
-
-// --- assertions and bounded scenario runner ----------------------------------
 
 const failures: string[] = [];
 
@@ -282,7 +213,6 @@ const call = async (registered: Registered, event: string, payload: unknown, ctx
 	return handler(payload, ctx);
 };
 
-/** Runs `body` under a hard wall clock; a scenario that overruns exits non-zero instead of hanging. */
 async function scenario(name: string, body: () => Promise<void>): Promise<void> {
 	const started = Date.now();
 	const timer = setTimeout(() => {
@@ -297,7 +227,6 @@ async function scenario(name: string, body: () => Promise<void>): Promise<void> 
 	console.log(`  (${name}: ${Date.now() - started}ms)`);
 }
 
-/** Waits until `condition` holds, failing at `OBSERVE_DEADLINE_MS`; never waits unconditionally. */
 async function observed(what: string, condition: () => boolean): Promise<boolean> {
 	const deadline = Date.now() + OBSERVE_DEADLINE_MS;
 	while (!condition()) {
@@ -312,7 +241,6 @@ async function observed(what: string, condition: () => boolean): Promise<boolean
 }
 
 const expectedFull = [...CONTAINER, "remote_env_init"];
-/** The host's canonical order: requested builtins in registry order, then extension names sorted by code point. */
 const canonical = (names: string[], all: { name: string; sourceInfo: { source: string } }[]): string => {
 	const requested = new Set(names);
 	const builtins = [
@@ -322,9 +250,6 @@ const canonical = (names: string[], all: { name: string; sourceInfo: { source: s
 	return [...builtins, ...[...requested].filter((name) => !builtinSet.has(name)).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))].join(",");
 };
 
-// --- scenarios ---------------------------------------------------------------
-
-/** Row 1: no child process on the per-turn path, active sets unchanged. */
 async function perTurnCensus(registered: Registered, dirs: { repoMain: string; wt: string; plain: string; nested: string }): Promise<void> {
 	const contexts = [dirs.repoMain, dirs.wt, dirs.plain, dirs.nested].map((cwd) => makeCtx({ cwd }).ctx);
 	resetSpawns();
@@ -361,7 +286,6 @@ async function perTurnCensus(registered: Registered, dirs: { repoMain: string; w
 	}
 }
 
-/** Rows 1 (negative) and 2: each edge cwd keeps its pre-change verdict. */
 async function edgeMatrix(
 	registered: Registered,
 	edges: { nonGit: string; deadGitfile: string; linkDir: string; linkSrc: string },
@@ -376,13 +300,10 @@ async function edgeMatrix(
 		const expected = canonical(one.expect === "none" ? [] : expectedFull, registered.allTools());
 		check(`${one.name}: verdict`, registered.active.join(",") === expected, `got ${registered.active.join(",")}`);
 	}
-	// sanity: the symlink target really is an opted-in repo (a broken fixture would
-	// make the "full" expectation vacuous)
 	const parsed: unknown = JSON.parse(readFileSync(join(edges.linkSrc, CONFIG_PATH), "utf8"));
 	check("symlink target is opted in", typeof parsed === "object" && parsed !== null, `config unreadable at ${edges.linkSrc}`);
 }
 
-/** Row 3: four session shapes plus a non-subagent context; verdict + entry-read census. */
 async function isolatedJudgment(registered: Registered): Promise<void> {
 	const shapes: { name: string; tree: TreeSpec; subagent: boolean; expectIsolated: boolean }[] = [
 		{
@@ -442,10 +363,6 @@ async function isolatedJudgment(registered: Registered): Promise<void> {
 		censusArmed = true;
 		try {
 			await call(registered, "session_start", { type: "session_start" }, harness.ctx);
-			// The isolated branch starts preparing an environment in the background
-			// (checkHost → ssh). Gate on that observable event, not on a sleep: a
-			// subagent whose judgment is false instead runs mainCheckout
-			// (`git --git-common-dir`), which is equally observable.
 			await observed(`${shape.name}: session_start settled`, () => spawnedProgram("ssh") || spawnedGitWith("--git-common-dir"));
 		} finally {
 			censusArmed = false;
@@ -468,10 +385,7 @@ async function isolatedJudgment(registered: Registered): Promise<void> {
 	}
 }
 
-/** Row 4: `/worktree` host check and `session_start` branch decisions. */
 async function hookSequences(registered: Registered, dirs: { repoMain: string; plain: string }): Promise<void> {
-	// inside an opted-in project: checkHost runs (ssh spawn) → Komodo unreachable →
-	// command refused with an error notification, before any move waiter is armed
 	resetSpawns();
 	censusArmed = true;
 	const inside = makeCtx({ cwd: dirs.repoMain });
@@ -494,8 +408,6 @@ async function hookSequences(registered: Registered, dirs: { repoMain: string; p
 		`notifications: ${JSON.stringify(inside.notifications)}`,
 	);
 
-	// outside a project: no host check, no refusal, and the move waiter still runs
-	// to completion (the simulated move resolves it on its first tick)
 	resetSpawns();
 	censusArmed = true;
 	const outside = makeCtx({ cwd: dirs.plain, moveTo: dirs.repoMain });
@@ -520,8 +432,6 @@ async function hookSequences(registered: Registered, dirs: { repoMain: string; p
 		console.log(`    waiter spawns (baseline): ${spawns.map((record) => record.program).join(",") || "none"}`);
 	}
 }
-
-// --- run ---------------------------------------------------------------------
 
 async function main(): Promise<number> {
 	const repoMain = join(fixtureRoot, "opted-main");
@@ -573,7 +483,5 @@ try {
 	exitCode = await main();
 } finally {
 	rmSync(fixtureRoot, { recursive: true, force: true });
-	// Explicit exit: the plugin may hold timers (the /worktree waiter) that would
-	// otherwise keep the process alive after the scenarios have finished.
 	process.exit(exitCode);
 }

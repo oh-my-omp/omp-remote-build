@@ -1,15 +1,3 @@
-/**
- * #18 acceptance driver: subprocess transport (src/run.ts, src/remote-files.ts) under a 64 MiB load.
- *
- * Usage: bun --expose-gc accept/transport.ts <row1|row2|row3> --src <plugin src dir> [--baseline]
- *   --src       the checkout under test (head or base), so one driver measures both
- *   --baseline  row2 only: the base writeRemoteFile takes bytes, so the file is read first
- *
- * Stubs live in a fresh temp dir prepended to PATH: `ssh <host> <cmd>` runs <cmd> under
- * `sh -c` locally (so `mkdir -p … && cat > …` really lands the stdin), and `mutagen`
- * answers `sync flush` with 64 MiB of stdout. Memory is sampled every 2 ms during
- * each call; deltas are peaks over a gc-settled reading taken just before it.
- */
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { chmod, mkdtemp } from "node:fs/promises";
@@ -26,8 +14,6 @@ if ((row !== "row1" && row !== "row2" && row !== "row3") || src === undefined) {
 	throw new Error("usage: transport.ts <row1|row2|row3> --src <plugin src dir> [--baseline]");
 }
 
-// Bun resolves executables against the PATH the process started with, so the
-// driver writes its stubs, then re-runs itself with the stub dir first on PATH.
 const stubDir = process.env.RB_ACCEPT18_DIR;
 if (stubDir === undefined) {
 	const fresh = await mkdtemp(join(tmpdir(), "rb-accept18-"));
@@ -44,7 +30,6 @@ if (stubDir === undefined) {
 }
 const dir = stubDir;
 
-// Runtime-selected checkout (--src): the same driver measures the base and the head.
 const runModule = await import(join(src, "run.ts"));
 const remoteFiles = await import(join(src, "remote-files.ts"));
 const mutagen = await import(join(src, "mutagen.ts"));
@@ -55,7 +40,6 @@ const host = {
 	bin: { km: "km", mutagen: "mutagen" },
 };
 
-/** Peak heapUsed/RSS increase over a gc-settled baseline while `call` runs; its result stays referenced until sampling stops. */
 async function measure<T>(call: () => Promise<T>): Promise<{ value: T; heapPeakDelta: number; rssPeakDelta: number }> {
 	Bun.gc(true);
 	const before = process.memoryUsage();

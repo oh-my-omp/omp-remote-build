@@ -4,7 +4,6 @@ import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 import { type Diagnostic, RemoteBuildError } from "./diagnostics.ts";
 import type { HostConfig } from "./types.ts";
 
-/** User-level host config: `<omp agent dir>/remote-build.json` (`~/.omp/agent` by default). */
 export function hostConfigPath(): string {
 	return join(getAgentDir(), "remote-build.json");
 }
@@ -13,10 +12,6 @@ const KNOWN_FIELDS: Record<keyof HostConfig, true> = { ssh: true, remoteRoot: tr
 const KNOWN_KOMODO_FIELDS: Record<keyof HostConfig["komodo"], true> = { profile: true, server: true, cliConfig: true };
 const KNOWN_BIN_FIELDS: Record<keyof HostConfig["bin"], true> = { km: true, mutagen: true };
 
-/**
- * Reads the host config anew on every call, so edits apply without restarting omp.
- * Throws when the file is missing or invalid.
- */
 export async function loadHost(): Promise<HostConfig> {
 	const path = hostConfigPath();
 	let raw: unknown;

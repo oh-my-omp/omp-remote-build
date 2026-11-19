@@ -1,27 +1,3 @@
-/**
- * Acceptance harness for issue #22: `containerRunning` and `runOnce` status
- * polling must use the lightweight `GetDeploymentContainer` read instead of
- * parsing full `InspectDockerContainer` documents.
- *
- * Serves a local Komodo Core stub that records every request type and the
- * response bytes it sends, then drives the real `komodo.ts` exports through:
- *   1. `containerRunning` over running / exited / absent / not_deployed /
- *      paused / restarting / unknown states;
- *   2. `runOnce` polling running → exited, then exactly one inspect for the
- *      exit code, plus a runOnce whose container vanishes mid-run;
- *   3. `ensureContainer` request sequences (kept under test, must not change).
- *
- * Usage:
- *   EXPECT_LIGHT=0 bun test/komodo-light-poll.ts   # behavior + measurements only (baseline)
- *   bun test/komodo-light-poll.ts                  # additionally asserts the light path
- *
- * In baseline mode every status answer is served as a full `InspectDockerContainer`
- * document, matching the old implementation; in light mode the same answers go
- * through `GetDeploymentContainer` (with the one `unknown`-state inspect
- * fallback). Exits 0 when every assertion holds and always prints the request
- * sequence plus per-type response-byte totals so the same load can be compared
- * before and after the change.
- */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,15 +7,12 @@ import type { ContainerSpec, HostConfig } from "../src/types.ts";
 
 const EXPECT_LIGHT = process.env.EXPECT_LIGHT !== "0";
 
-// --- komodo core stub -------------------------------------------------------
-
 interface SeenRequest {
 	readonly endpoint: string;
 	readonly type: string;
 	readonly bytes: number;
 }
 
-/** One entry per request, in order. `respond` builds the JSON payload. */
 interface Expectation {
 	readonly type: string;
 	readonly check?: (params: Record<string, unknown>) => void;
@@ -50,10 +23,8 @@ const requests: SeenRequest[] = [];
 let queue: Expectation[] = [];
 const failures: string[] = [];
 
-/** Marker: the expectation answers HTTP 500 with this top-level `error` message, like Core's missing-resource reply. */
 const http500 = (message: string) => ({ __http500: message });
 
-/** Resets the recorded requests and installs a new expectation queue. */
 function scenario(name: string, expectations: Expectation[]): void {
 	for (const left of queue) failures.push(`${name}: leftover expectation ${left.type}`);
 	queue = expectations;
@@ -101,7 +72,6 @@ function deploymentDoc(name: string, overrides: Record<string, unknown>): Record
 	};
 }
 
-/** A fat inspect document (~4 KiB) like a real `InspectDockerContainer` reply. */
 function inspectDoc(running: boolean, status: string, exitCode: number): unknown {
 	return {
 		Id: "deadbeef".repeat(16),
@@ -131,12 +101,6 @@ function inspectDoc(running: boolean, status: string, exitCode: number): unknown
 	};
 }
 
-/**
- * A status answer on whichever transport the build under test uses, as one or
- * more expectations. `exitCode` is embedded in the baseline's inspect document;
- * `inspected` supplies the inspect answer the light build falls back to for a
- * Core `unknown` state.
- */
 function statusExpectations(
 	state: string,
 	exitCode = 0,
@@ -168,7 +132,6 @@ function statusExpectations(
 	];
 }
 
-/** `GetDeploymentContainer` on paths that always used it (ensureContainer). */
 function stateExpectation(state: string): Expectation {
 	return { type: "GetDeploymentContainer", respond: () => ({ state }) };
 }
@@ -203,8 +166,6 @@ const stub = Bun.serve({
 	},
 });
 
-// --- host config ------------------------------------------------------------
-
 const dir = mkdtempSync(join(tmpdir(), "rb-komodo-"));
 const cliConfig = join(dir, "komodo.cli.toml");
 writeFileSync(cliConfig, `[[profile]]\nname = "build"\nhost = "${stub.url.origin}"\nkey = "K-test"\nsecret = "S-test"\n`);
@@ -226,8 +187,6 @@ function check(name: string, condition: boolean, detail: string): void {
 		console.log(`  FAIL: ${name}: ${detail}`);
 	}
 }
-
-// --- scenario 1: containerRunning --------------------------------------------
 
 async function scenarioRunning(): Promise<void> {
 	scenario("containerRunning", [
@@ -255,8 +214,6 @@ async function scenarioRunning(): Promise<void> {
 	check("inspect count", inspects === (EXPECT_LIGHT ? 1 : 5), `got ${inspects}`);
 }
 
-// --- scenario 2: runOnce ------------------------------------------------------
-
 function runOncePrologue(): Expectation[] {
 	return [
 		serverExpectation,
@@ -273,7 +230,6 @@ async function scenarioRunOnce(): Promise<void> {
 		...statusExpectations("running"),
 		...statusExpectations("running"),
 		...statusExpectations("exited", 7),
-		// the light implementation reads ExitCode from one final inspect
 		...(EXPECT_LIGHT ? [{ type: "InspectDockerContainer", respond: () => inspectDoc(false, "exited", 7) } satisfies Expectation] : []),
 		{
 			type: "GetContainerLog",
@@ -317,12 +273,9 @@ async function scenarioRunOnceGone(): Promise<void> {
 	check("no log read", !requests.some((request) => request.type === "GetContainerLog"), "log requested");
 }
 
-// --- scenario 3: ensureContainer sequences ------------------------------------
-
 async function scenarioEnsure(): Promise<void> {
 	const matched = deploymentDoc(serviceSpec.name, {});
 
-	// A: existing config matches and the container is running → early return.
 	scenario("ensure/matched+running", [
 		serverExpectation,
 		{ type: "ListFullDeployments", respond: () => [matched] },
@@ -332,7 +285,6 @@ async function scenarioEnsure(): Promise<void> {
 	finishScenario("ensure/matched+running");
 	check("no Deploy", !requests.some((request) => request.type === "Deploy"), "deploy issued");
 
-	// B: existing config matches but the container is not running → deploy.
 	scenario("ensure/matched+created", [
 		serverExpectation,
 		{ type: "ListFullDeployments", respond: () => [matched] },
@@ -349,7 +301,6 @@ async function scenarioEnsure(): Promise<void> {
 		"no deploy",
 	);
 
-	// C: no existing deployment → create + deploy.
 	scenario("ensure/fresh", [
 		serverExpectation,
 		{ type: "ListFullDeployments", respond: () => [] },
@@ -366,8 +317,6 @@ async function scenarioEnsure(): Promise<void> {
 		"no create",
 	);
 }
-
-// --- run ----------------------------------------------------------------------
 
 async function main(): Promise<void> {
 	try {

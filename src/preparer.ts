@@ -4,14 +4,8 @@ import { tr } from "../omomp-shared/i18n.ts";
 import { BASE_IMAGE } from "./project.ts";
 import type { PreparedEnv } from "./types.ts";
 
-/** Agent definition name of the preparer subagent; `ctx.agent.name` in its session. */
 export const PREPARER_AGENT_NAME = "remote-env-preparer";
 
-/**
- * The preparer's final answer: structured data, not prose, so the publish decision reads a
- * validated value instead of guessing at a line format. The subagent's `yield` call is validated
- * against this schema in strict mode.
- */
 const reportSchema = z.object({
 	result: z.enum(["success", "partial", "failed"]).describe("success, partial or failed"),
 	toolchain: z.string().describe("languages and versions"),
@@ -24,13 +18,10 @@ const reportSchema = z.object({
 	caveats: z.string().describe("services, environment variables, slow steps, known failing tests | none"),
 });
 
-/** A validated preparer report. */
 export type PreparerReport = z.infer<typeof reportSchema>;
 
-/** The JSON Schema of {@link reportSchema}, handed to the subagent as its output schema. */
 const PREPARER_OUTPUT_SCHEMA = reportSchema.toJsonSchema();
 
-/** The rendered report, published to `.omp/remote-build.preparer.md` and shown in `remote_env_init`'s output. */
 export function renderPreparerReport(report: PreparerReport): string {
 	const verified = report.verified.length === 0 ? ["verified: none"] : ["verified:", ...report.verified.map((line) => `- ${line}`)];
 	return [
@@ -74,12 +65,6 @@ verified: one entry per command run in the final container: \`<command>\` -> exi
 how_to: build: <command>; test: <command>; run: <command> (n/a when not applicable)
 caveats: services, environment variables, slow steps, known failing tests | none`;
 
-/**
- * Runs the preparer subagent to completion in worktree `env.root` and returns its validated
- * report. It loads exactly this plugin, so it gets the container tools and
- * `remote_env_build_image` regardless of the user's installed plugins. Throws unless it
- * finished cleanly with a report that matches the output schema.
- */
 export async function runPreparer(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,

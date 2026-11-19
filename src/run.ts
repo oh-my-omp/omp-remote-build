@@ -1,33 +1,20 @@
 import { type FileHandle, open } from "node:fs/promises";
 import { RemoteBuildError } from "./diagnostics.ts";
 
-/**
- * What a child process reads on stdin. A file is fed by descriptor and a pipe
- * (e.g. another child's `stdout` stream) is streamed: neither passes through the JS heap.
- */
 export type StdinSource =
 	| { readonly kind: "bytes"; readonly bytes: Uint8Array }
 	| { readonly kind: "file"; readonly path: string }
 	| { readonly kind: "pipe"; readonly stream: ReadableStream<Uint8Array> };
 
-/** Where a child's output stream goes: decoded into a JS string, discarded, or written (truncating) to a file without entering JS. */
 export type OutputSink = "capture" | "ignore" | { readonly kind: "file"; readonly path: string };
 
 type Stdin = Uint8Array | number | ReadableStream<Uint8Array> | "ignore";
 type Stdout = "pipe" | "ignore" | number;
 
-/** Text of a captured stream; `undefined` for any other sink, whose bytes never enter JS. */
 function captured(stream: ReadableStream<Uint8Array> | number | undefined): Promise<string | undefined> {
 	return stream instanceof ReadableStream ? new Response(stream).text() : Promise.resolve(undefined);
 }
 
-/**
- * Spawns argv with the declared stdio. Files are opened here, before the process
- * starts, so a missing or unreadable stdin file fails without spawning (Bun.file
- * as stdin would create a missing file and feed it empty); a directory, which
- * opens but cannot be read, fails here too with the read's own EISDIR. Descriptors
- * are closed once the process has exited.
- */
 async function spawn(
 	argv: readonly string[],
 	stdin: StdinSource | undefined,
@@ -69,7 +56,6 @@ async function spawn(
 	}
 }
 
-/** Runs a binary with argv (no shell) and returns its exit code and both captured outputs. */
 export async function runResult(
 	argv: readonly string[],
 	options: { readonly stdin?: StdinSource } = {},
@@ -78,15 +64,8 @@ export async function runResult(
 	return { code: result.code, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-/** Options of `run`; stderr defaults to captured, since a non-zero exit reports it. */
 export type RunOptions = { readonly stdin?: StdinSource; readonly stderr?: OutputSink };
 
-/**
- * Runs a binary with argv (no shell); throws `command-exit` with the captured
- * stderr (else captured stdout) on non-zero exit. Resolves to stdout when it is
- * captured (the default); a caller that declares stdout ignored or a file gets
- * nothing back and allocates no buffer for it.
- */
 export function run(argv: readonly string[], options?: RunOptions & { readonly stdout?: "capture" }): Promise<string>;
 export function run(argv: readonly string[], options: RunOptions & { readonly stdout: Exclude<OutputSink, "capture"> }): Promise<undefined>;
 export async function run(

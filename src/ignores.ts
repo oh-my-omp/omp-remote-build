@@ -1,13 +1,6 @@
 /**
- * Translate Git's active ignore sources, rather than snapshotting ignored files:
- * the resulting rules also cover build directories/files created later. Git is
- * the oracle for source discovery and for reopening ignored ancestors of tracked
- * files and explicit includes; guards keep their otherwise ignored siblings out.
- * Extra Mutagen ignores and container targets intentionally win over includes.
  * Rules describe the index and ignore files at derivation time: changing either
  * (including adding a nested .gitignore) requires rederivation/session recreation.
- * Git's byte-oriented ?/classes and doublestar's Unicode matching differ for
- * non-ASCII names; portable ASCII glob operands have equivalent semantics.
  */
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -42,7 +35,6 @@ async function ignoredPaths(root: string, paths: readonly string[]): Promise<Set
 	return new Set(nulFields(text));
 }
 
-/** A slash probe forces directory-only matches even for not-yet-created includes. */
 async function ignoredDirectories(root: string, paths: readonly string[]): Promise<Set<string>> {
 	const ignored = await ignoredPaths(root, paths);
 	if (paths.length === 0) return ignored;
@@ -56,8 +48,6 @@ async function ignoredDirectories(root: string, paths: readonly string[]): Promi
 	for (let index = 0; index < fields.length; index += 4) {
 		const pattern = fields[index + 2]!;
 		const path = fields[index + 3]!.slice(0, -1);
-		// abc/** matching abc/ describes a descendant, not the directory abc.
-		// Only a directory-only rule can change the no-slash probe's answer.
 		if (pattern.endsWith("/")) {
 			if (pattern.startsWith("!")) ignored.delete(path);
 			else ignored.add(path);
@@ -68,7 +58,6 @@ async function ignoredDirectories(root: string, paths: readonly string[]): Promi
 
 async function optionalFile(path: string, worktree = false): Promise<string | undefined> {
 	try {
-		// Git follows global excludes symlinks, but not worktree .gitignore symlinks.
 		if (worktree && !(await lstat(path)).isFile()) return undefined;
 		return await readFile(path, "utf8");
 	} catch (error) {
@@ -81,7 +70,6 @@ function literal(path: string): string {
 	return path.replace(/[\\*?[\]{}]/g, "\\$&");
 }
 
-/** Git trims only unescaped trailing spaces, not tabs or escaped spaces. */
 function trimGitLine(line: string): string {
 	let end = line.endsWith("\r") ? line.length - 1 : line.length;
 	while (end > 0 && line[end - 1] === " ") {
@@ -113,7 +101,6 @@ function foldLetter(character: string, ignoreCase: boolean): string {
 	return /[{}]/.test(character) ? `\\${character}` : character;
 }
 
-/** Keep Git glob syntax, escaping doublestar-only brace alternatives. */
 function translateGlob(pattern: string, ignoreCase: boolean, source: string): string {
 	let result = "";
 	for (let index = 0; index < pattern.length; index++) {
@@ -152,7 +139,6 @@ function translateGlob(pattern: string, ignoreCase: boolean, source: string): st
 			}
 			if (!closed) throw new RemoteBuildError({ kind: "ignore-pattern", path: source, reason: "unclosed" });
 			if (ignoreCase) {
-				// Test the positive class, then union opposite-case ASCII letters.
 				const expression = new RegExp(`^[${content}]$`, "u");
 				let folded = "";
 				for (let code = 65; code <= 90; code++) {
@@ -167,7 +153,6 @@ function translateGlob(pattern: string, ignoreCase: boolean, source: string): st
 			result += `[${negated}${content}]`;
 		} else result += foldLetter(character, ignoreCase);
 	}
-	// Git's terminal /** matches contents, while doublestar also matches parent.
 	if (result.endsWith("/**")) result += "/*";
 	return result;
 }
@@ -183,10 +168,8 @@ function appendSource(patterns: string[], text: string, scope: string, ignoreCas
 		if (directoryOnly) pattern = pattern.slice(0, -1);
 		const anchored = pattern.startsWith("/");
 		if (anchored) pattern = pattern.slice(1);
-		// Git patterns with empty/dot path components cannot match real paths.
 		if (pattern.split("/").some((part) => part === "" || part === "." || part === "..")) continue;
 		const hasSlash = pattern.includes("/");
-		// A basename ** is just * in Git; scoped doublestar would match scope itself.
 		if (pattern === "**") pattern = "*";
 		pattern = translateGlob(pattern, ignoreCase, source);
 		if (scope !== "") pattern = `/${literal(scope)}/${anchored || hasSlash ? "" : "**/"}${pattern}`;
@@ -236,12 +219,6 @@ export async function deriveIgnoreRules(root: string, config: RemoteBuildConfig)
 	if (excludeText !== undefined) appendSource(patterns, excludeText, "", ignoreCase, exclude);
 	await appendWorktreeSources(root, patterns, ignoreCase);
 
-	// Git's own ignore evaluation over the index: tracked paths matched by the same
-	// exclude sources this function translates. Running `check-ignore --no-index`
-	// over the full path list would materialize the whole list and an equal-sized
-	// stdin blob in the JS heap; `-i --exclude-standard` asks git directly. The
-	// result mirrors the previous pipeline's Set: unmerged stages collapse, and
-	// pattern order ignores duplicates exactly as before.
 	const ignoredTracked = new Set(nulFields((await git(root, ["ls-files", "--cached", "-i", "-z", "--exclude-standard"])).text));
 	const parents = new Set<string>();
 	for (const path of ignoredTracked) ancestors(path, parents);

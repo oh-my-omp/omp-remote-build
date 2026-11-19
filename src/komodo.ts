@@ -7,7 +7,6 @@ interface Endpoint {
 	readonly secret: string;
 }
 
-/** Only the fields this plugin owns; Komodo owns the remaining defaults. */
 interface ManagedConfig {
 	readonly server_id: string;
 	readonly swarm_id: string;
@@ -77,7 +76,6 @@ type Update =
 	| { readonly id: string; readonly status: "Queued" | "InProgress" }
 	| { readonly id: string; readonly status: "Complete"; readonly success: boolean };
 
-/** What the container runs: a long-lived service, or one command that exits. */
 type ContainerProcess =
 	| { readonly kind: "service" }
 	| { readonly kind: "once"; readonly entrypoint: string | null; readonly argv: readonly string[] };
@@ -113,7 +111,6 @@ function mongoId(value: unknown): string {
 	return string(record(record(value, "resource")._id, "_id").$oid, "_id.$oid");
 }
 
-/** Core URL and API credentials of `host.komodo.profile`, read from the km CLI config so km and the API share one source. */
 async function loadEndpoint(host: HostConfig): Promise<Endpoint> {
 	const path = host.komodo.cliConfig;
 	let parsed: unknown;
@@ -191,11 +188,6 @@ async function request(endpoint: Endpoint, operation: Request): Promise<unknown>
 	return json(operation, response);
 }
 
-/**
- * Like `request`, but resolves `undefined` when Core answers HTTP 500 with an
- * `error` message or a `trace` entry matching `absent` (Docker's "no such
- * object" errors). The body is only matched, never exposed.
- */
 async function requestOrAbsent(endpoint: Endpoint, operation: Request, absent: RegExp): Promise<unknown | undefined> {
 	const response = await send(endpoint, operation);
 	if (response.ok) return json(operation, response);
@@ -207,8 +199,6 @@ async function requestOrAbsent(endpoint: Endpoint, operation: Request, absent: R
 			body = undefined;
 		}
 		if (typeof body === "object" && body !== null) {
-			// Core puts a missing resource's message in `error`; a nested cause, such as
-			// periphery's "No such container", arrives in `trace`.
 			if ("error" in body && typeof body.error === "string" && absent.test(body.error)) return undefined;
 			if ("trace" in body && Array.isArray(body.trace) && body.trace.some((entry) => typeof entry === "string" && absent.test(entry)))
 				return undefined;
@@ -266,7 +256,6 @@ function parseUpdate(value: unknown): Update {
 }
 
 function shellWord(value: string): string {
-	// Komodo v2.2 parses multiline key/value text, then concatenates it into a shell command.
 	if (/[\r\n\0]/.test(value) || value.includes(" #")) {
 		throw new RemoteBuildError({ kind: "komodo-value", reason: "shell" });
 	}
@@ -274,7 +263,6 @@ function shellWord(value: string): string {
 }
 
 function commandWord(value: string): string {
-	// The command is a single shell line, not key/value text: only line breaks and NUL are unsafe.
 	if (/[\r\n\0]/.test(value)) throw new RemoteBuildError({ kind: "komodo-value", reason: "command" });
 	return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -304,7 +292,6 @@ function managedConfig(spec: ContainerSpec, process: ContainerProcess, server: s
 		swarm_id: "",
 		image: { type: "Image", params: { image: spec.image } },
 		command: process.kind === "service" ? "sleep infinity" : process.argv.map(commandWord).join(" "),
-		// Komodo v2.2's conversion/env deserializers append a trailing newline.
 		volumes: volumes.length === 0 ? "" : `${volumes.join("\n")}\n`,
 		environment: environment ? `${environment}\n` : "",
 		extra_args: extraArgs,
@@ -336,7 +323,6 @@ async function containerState(endpoint: Endpoint, deployment: string): Promise<s
 	return string(response.state, "GetDeploymentContainer.state");
 }
 
-/** Like `containerState`, but resolves `undefined` when the Deployment does not exist. */
 async function containerStateOrAbsent(endpoint: Endpoint, deployment: string): Promise<string | undefined> {
 	const response = await requestOrAbsent(
 		endpoint,
@@ -350,7 +336,6 @@ async function containerStateOrAbsent(endpoint: Endpoint, deployment: string): P
 	return response === undefined ? undefined : string(record(response, "GetDeploymentContainer").state, "GetDeploymentContainer.state");
 }
 
-/** Runs Deploy and waits for its Update to complete successfully. */
 async function deploy(endpoint: Endpoint, deployment: string): Promise<void> {
 	let update = parseUpdate(
 		await request(endpoint, {
@@ -378,7 +363,6 @@ async function waitRunning(endpoint: Endpoint, deployment: string): Promise<void
 	}
 }
 
-/** `spec`'s Deployment, created or updated to the plugin-owned config; `fresh` is false when it already matched. */
 async function upsertDeployment(
 	endpoint: Endpoint,
 	host: HostConfig,
@@ -413,15 +397,9 @@ async function upsertDeployment(
 	};
 }
 
-/**
- * Long-lived container for `spec`.
- * `ensure`: create/update the plugin-owned config and deploy unless an unchanged container is already running.
- * `redeploy`: always deploy, recreating the container.
- */
 export async function ensureContainer(host: HostConfig, spec: ContainerSpec, mode: "ensure" | "redeploy"): Promise<void> {
 	const endpoint = await loadEndpoint(host);
 	const { deployment, fresh } = await upsertDeployment(endpoint, host, spec, { kind: "service" });
-	// Core's periodically refreshed container state is the API's running-state contract.
 	if (mode === "ensure" && !fresh && (await containerState(endpoint, deployment.id)) === "running") return;
 	await deploy(endpoint, deployment.id);
 	await waitRunning(endpoint, deployment.id);
@@ -440,10 +418,6 @@ async function inspectContainer(endpoint: Endpoint, host: HostConfig, container:
 	return response === undefined ? undefined : record(record(response, "InspectDockerContainer").State, "State");
 }
 
-/**
- * Runs `command` once in a fresh container for `spec` (no restart) and waits for it to exit.
- * The Deployment stays after the run so the next run reuses it.
- */
 export async function runOnce(
 	host: HostConfig,
 	spec: ContainerSpec,
@@ -458,11 +432,9 @@ export async function runOnce(
 	for (;;) {
 		if (options.signal?.aborted) throw new RemoteBuildError({ kind: "container-aborted", name: spec.name });
 		const state = await containerStateOrAbsent(endpoint, deployment.id);
-		// Absent Deployment and NotDeployed both mean the container is gone.
 		if (state === undefined || state === "not_deployed") throw new RemoteBuildError({ kind: "container-disappeared", name: spec.name });
 		let status = state;
 		if (status === "unknown") {
-			// Core cannot tell (cold cache or unreachable server): ask the Docker daemon directly, like the old polling did.
 			const inspected = await inspectContainer(endpoint, host, spec.name);
 			if (inspected === undefined) throw new RemoteBuildError({ kind: "container-disappeared", name: spec.name });
 			status = string(inspected.Status, "State.Status");
@@ -473,7 +445,6 @@ export async function runOnce(
 			throw new RemoteBuildError({ kind: "container-timeout", name: spec.name, minutes: Math.round(options.timeoutMs / 60_000) });
 		await Bun.sleep(2_000);
 	}
-	// One full inspect for the exit code, skipped when the unknown-fallback already read it.
 	const state = exitState ?? (await inspectContainer(endpoint, host, spec.name));
 	if (state === undefined) throw new RemoteBuildError({ kind: "container-disappeared", name: spec.name });
 	const log = record(
@@ -492,7 +463,6 @@ export async function runOnce(
 	};
 }
 
-/** Builds `spec.image` on the build host with a one-shot `docker:cli` container on the host Docker daemon. */
 export async function buildImage(
 	host: HostConfig,
 	spec: ImageBuildSpec,
@@ -515,7 +485,6 @@ export async function buildImage(
 	);
 }
 
-/** Whether `image` exists on the build host's Docker daemon. */
 export async function imageExists(host: HostConfig, image: string): Promise<boolean> {
 	const endpoint = await loadEndpoint(host);
 	const response = await requestOrAbsent(
@@ -530,13 +499,6 @@ export async function imageExists(host: HostConfig, image: string): Promise<bool
 	return response !== undefined;
 }
 
-/**
- * Whether container `name` exists and is running on the build host.
- * Reads the Deployment's cached state; a container that is paused, restarting,
- * stopping or being removed still counts as running, matching docker's
- * `State.Running`. When Core reports `unknown` the container is inspected
- * directly, preserving the old behavior.
- */
 export async function containerRunning(host: HostConfig, name: string): Promise<boolean> {
 	const endpoint = await loadEndpoint(host);
 	const state = await containerStateOrAbsent(endpoint, name);
@@ -548,12 +510,10 @@ export async function containerRunning(host: HostConfig, name: string): Promise<
 	return state === "running" || state === "paused" || state === "restarting" || state === "stopping" || state === "removing";
 }
 
-/** argv of an interactive shell in `container` through the km CLI. */
 export function execArgv(host: HostConfig, container: string, shell: string): string[] {
 	return [host.bin.km, "-c", host.komodo.cliConfig, "-p", host.komodo.profile, "exec", "--server", host.komodo.server, container, shell];
 }
 
-/** Cheap authenticated Core read; the km CLI config is read anew so credential rotation takes effect. */
 export async function komodoReachable(host: HostConfig): Promise<void> {
 	const endpoint = await loadEndpoint(host);
 	array(await request(endpoint, { endpoint: "read", type: "ListServers", params: {} }), "ListServers");

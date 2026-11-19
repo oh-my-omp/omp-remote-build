@@ -39,10 +39,8 @@ const buildSchema = z.object({
 		.describe("One-line idempotent shell command run in the working directory after each container deployment; empty string for none."),
 });
 
-/** What the caller asked for. */
 type InitMode = "reuse" | "rebuild-image" | "reprepare";
 
-/** Where the image definition comes from in this call. */
 type ImagePlan =
 	| { readonly kind: "configured"; readonly image: string }
 	| { readonly kind: "dockerfile"; readonly dockerfile: DockerfileRef }
@@ -66,7 +64,6 @@ function assertNever(value: never): never {
 	throw new Error(`unhandled variant ${JSON.stringify(value)}`);
 }
 
-/** Report fields in output order. */
 const REPORT_KEYS = [
 	"worktree",
 	"project",
@@ -91,7 +88,6 @@ type ReportField =
 
 type Report = Partial<Record<(typeof REPORT_KEYS)[number], ReportField>>;
 
-/** `key:` followed by the output tail in a fence longer than any backtick run inside it. */
 function tailBlock(key: string, text: string): string {
 	const tail = outputTail(text);
 	const longest = Math.max(0, ...Array.from(tail.matchAll(/`+/g), (match) => match[0].length));
@@ -122,7 +118,6 @@ function renderReport(status: "ready" | "failed", report: Report, error?: string
 	return lines.join("\n");
 }
 
-/** Recreates the worktree container from `image`, then runs `bootstrap` once in a fresh container with the same mounts. */
 async function deployAndBootstrap(
 	env: PreparedEnv,
 	image: string,
@@ -140,20 +135,12 @@ async function deployAndBootstrap(
 	);
 }
 
-/**
- * The config fields `remote_env_init` publishes and applies in the running session, read from
- * disk. Every other field keeps the value the environment was prepared with.
- */
 async function liveEnv(env: PreparedEnv): Promise<PreparedEnv> {
 	const config: RemoteBuildConfig | undefined = await loadConfig(env.root);
 	if (config === undefined) throw new Error(`${CONFIG_PATH} disappeared from ${env.root}`);
 	return { ...env, config: { ...env.config, imageSource: config.imageSource, bootstrap: config.bootstrap } };
 }
 
-/**
- * Runs the preparer from an empty scratch directory, and once its report has `result: success`,
- * publishes its last successful candidate into the worktree. Returns the published Dockerfile.
- */
 async function prepare(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -189,7 +176,6 @@ async function prepare(
 	return { path: GENERATED_DOCKERFILE, sha256: hash, text: dockerfile };
 }
 
-/** Resolves the project image, recreates the worktree container from it and runs bootstrap; returns the report, or throws it on failure. */
 async function initEnvironment(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -289,7 +275,6 @@ async function initEnvironment(
 	}
 }
 
-/** Registers `remote_env_init` (agents) and `remote_env_build_image` (the preparer subagent only). */
 export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => Promise<PreparedEnv>): void {
 	const initTool = {
 		name: "remote_env_init",

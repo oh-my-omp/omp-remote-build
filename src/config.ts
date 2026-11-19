@@ -4,20 +4,12 @@ import { join } from "node:path";
 import { RemoteBuildError } from "./diagnostics.ts";
 import type { ImageSource, RemoteBuildConfig } from "./types.ts";
 
-/** Path of the opt-in config, relative to a worktree root. */
 export const CONFIG_PATH = ".omp/remote-build.json";
 
-/** Where a prepared project image's Dockerfile is published, relative to a worktree root. */
 export const GENERATED_DOCKERFILE = ".omp/remote-build.Dockerfile";
 
-/** Where the preparer's final report is published, relative to a worktree root. */
 export const PREPARER_REPORT = ".omp/remote-build.preparer.md";
 
-/**
- * Reads `.omp/remote-build.json` at `root`.
- * Returns `undefined` when the file does not exist (project not opted in);
- * throws when it exists but is invalid.
- */
 export async function loadConfig(root: string): Promise<RemoteBuildConfig | undefined> {
 	let text: string;
 	try {
@@ -29,21 +21,13 @@ export async function loadConfig(root: string): Promise<RemoteBuildConfig | unde
 	return parseConfig(JSON.parse(text) as unknown);
 }
 
-/** A verified preparer result, as published into the worktree. */
 export interface PreparedImageFiles {
-	/** Published byte-for-byte: its sha256 keys the image tag already built from it. */
 	readonly dockerfile: string;
 	readonly bootstrap: string | null;
 	readonly report: string;
-	/** sha256 of `dockerfile`; recorded in the report so a later edit marks the report stale. */
 	readonly sha256: string;
 }
 
-/**
- * Publishes a prepared image into worktree `root`: the Dockerfile, then the report, then the
- * config (`dockerfile` and `bootstrap` set, every other field kept), each by atomic rename.
- * The config is written last, so it never points at a missing Dockerfile.
- */
 export async function publishPreparedImage(root: string, files: PreparedImageFiles): Promise<void> {
 	const raw = record(JSON.parse(await readFile(join(root, CONFIG_PATH), "utf8")) as unknown, "config");
 	if (raw.image !== undefined) throw new Error(`${CONFIG_PATH} names an image; a prepared image cannot be published`);
@@ -55,7 +39,6 @@ export async function publishPreparedImage(root: string, files: PreparedImageFil
 	await replaceFile(root, CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-/** The published preparer report and the Dockerfile hash it was written for, if present. */
 export async function readPreparerReport(root: string): Promise<{ readonly sha256: string; readonly text: string } | undefined> {
 	let text: string;
 	try {
