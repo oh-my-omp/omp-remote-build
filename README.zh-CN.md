@@ -2,317 +2,64 @@
 
 [English](README.md) | 简体中文
 
-一个 [Oh My Pi（`omp`）](https://github.com/can1357/oh-my-pi) 插件，为每个 git worktree 在远端 Docker 主机上提供独立的构建/测试环境：
-
-- 一个 **Mutagen one-way-replica** 会话把本地 worktree 镜像到构建主机；
-- 一个 **Komodo Deployment** 在该主机上运行一个长期存在的容器，副本以 bind mount 挂载为它的工作目录；
-- 一个**项目镜像**装着项目的工具链和依赖：配置里指定的现成镜像、worktree 里的 Dockerfile，或者由 subagent 一次性准备、以 `.omp/remote-build.Dockerfile` 发布到仓库里的 Arch Linux 镜像。构建主机只缓存构建好的镜像，以 Dockerfile 内容为键，Dockerfile 相同的 worktree 都复用它们；
-- **`remote_env_init`** 用该镜像准备 worktree 的容器，并运行项目的 bootstrap 命令；
-- 四个 **`container_*` 工具**让 agent 在该容器里使用交互式 PTY。
-
-agent 继续用常规工具在本地编辑文件，通过容器工具在远端机器上编译、测试和运行。每次可能改动文件的工具调用之后都会做一次 Mutagen flush，让容器在 agent 下一步之前看到改动。
-
-项目用一个文件 `.omp/remote-build.json` 选择加入。没有这个文件的项目永远不会被触碰。
-
-## 工作原理
-
-```mermaid
-flowchart LR
-  subgraph local["本地机器"]
-    A["omp 会话<br/>cwd = worktree"]
-    W["git worktree"]
-    M["Mutagen 守护进程"]
-    K["km CLI"]
-  end
-  subgraph remote["构建主机"]
-    R["副本目录<br/>remoteRoot/&lt;env-id&gt;"]
-    S["preparer 临时目录<br/>remoteRoot/prepare/&lt;env-id&gt;"]
-    P["Komodo Periphery + Docker"]
-    B["一次性 docker:cli<br/>rb-build-&lt;env-id&gt;"]
-    I["镜像 rb-project-&lt;project-id&gt;:&lt;dockerfile-hash&gt;"]
-    C["容器 rb-&lt;env-id&gt;<br/>sleep infinity"]
-  end
-  Core["Komodo Core"]
-  A -->|"read / edit / write"| W
-  W -->|"经 SSH 的 one-way-replica"| M --> R
-  A -->|"Core API：create/update + Deploy"| Core --> P
-  P --> B -->|"docker build"| I
-  R -->|"构建上下文（worktree Dockerfile）"| B
-  S -->|"空构建上下文（preparer 候选）"| B
-  P --> C
-  I -->|"镜像来源"| C
-  R -->|"在 workdir 处 bind mount"| C
-  A -->|"container_exec → km exec"| K --> Core
-```
-
-### 环境生命周期
-
-```mermaid
-sequenceDiagram
-  participant U as 用户
-  participant P as remote-build
-  participant H as 构建主机（SSH）
-  participant Co as Komodo Core
-  participant Mu as Mutagen
-  U->>P: /worktree feature-x
-  P->>H: ssh BatchMode true
-  P->>Co: ListServers（带认证的读取）
-  Note over P: 失败 → 拒绝命令，不创建 worktree
-  P-->>U: omp 原生 /worktree 运行并移动会话
-  P->>Mu: 查找标签为 rb-env=<id> 的会话，没有则创建
-  P->>Mu: flush
-  P->>H: 通过 ssh 上传 containerFiles
-  opt 配置指定了 image
-    P->>Co: Create/UpdateDeployment rb-<id>，Deploy，等待运行
-  end
-  P-->>U: "remote-build: ready rb-<id>"
-  Note over U,P: 否则由 agent 调用 remote_env_init（见环境镜像）
-```
-
-- **身份。** 一个环境属于一个绝对路径的 worktree 根。它的 id 是 `<slug>-<hash>`：目录名生成的 slug，加上规范根路径 SHA-256 的 10 个十六进制字符。Mutagen 会话叫 `rb-<id>`，带标签 `remote-build` 和 `rb-env=<id>`。副本位于 `<remoteRoot>/<id>`，Komodo Deployment 和它的容器都叫 `rb-<id>`。一个项目是同一仓库的所有 worktree；项目 id 用同样方法从主检出的路径得出。项目镜像的标签是 `rb-project-<project-id>:<Dockerfile SHA-256 的前 16 个十六进制字符>`，所以已存在的标签必然是这份 Dockerfile 的构建结果。
-- **权威。** 仓库拥有环境定义：`.omp/remote-build.json` 和它指定的 Dockerfile，包括准备好的 `.omp/remote-build.Dockerfile`。会话是否存在由 Mutagen 守护进程决定（按标签查找），Deployment 是否存在并在运行由 Komodo Core 决定，镜像是否存在由构建主机的 Docker 守护进程决定。构建好的镜像只是缓存：构建主机会清理没有容器使用的镜像，插件会从 Dockerfile 重建缺失的镜像。插件在构建主机上不保存自己的状态。重新准备是幂等的：已有会话会被复用，托管字段已匹配且容器在运行的 Deployment 保持不动，发生漂移的会被更新并重新部署。
-- **何时准备环境：**
-  - `/worktree`（或 `/wt`）把会话移到一个已选择加入项目的新 worktree 之后；
-  - 在一个已有 Mutagen 会话的非主 worktree 里开始会话时（在那里重新打开或恢复会话）；
-  - **隔离 subagent**（带 `isolated: true` 的 `task`）开始会话时，它独立的工作区会得到自己的环境；
-  - 在已选择加入项目的某个 worktree 里，本会话还没有环境时，第一次调用 `remote_env_init` 或 `container_*` 工具。
-  主检出从不获得环境；远端环境是 worktree 的功能。准备会同步 worktree，如果配置了 `image`，还会确保容器存在。镜像来源是其他情况时，容器归 `remote_env_init` 管。
-- **门控。** 环境处于 `preparing` 时，该 worktree 里的每个工具调用都会等待它。准备 `failed` 时，那里的每个工具调用都被拦截，错误作为拦截原因返回。修复原因后重启会话。
-- **flush。** 每个工具结果之后，插件都会执行 `mutagen sync flush`，除非该工具已知不写文件：`read`、`grep`、`glob`、`ast_grep`、`web_search`、`todo`、`ask`、`ctx`、`wait`、四个 `container_*` 工具，以及 `remote_env_build_image`（它只在构建主机上构建）。其他工具（`edit`、`write`、`eval`、`exec_command`、`bash`、`task`、`remote_env_init` 等）都算作可能写入，因为它们的副作用未知，或者对 `remote_env_init` 来说，因为它会发布准备好的文件。
-
-### 环境镜像
-
-`remote_env_init` 解析项目镜像，用它重建 worktree 容器 `rb-<id>`，并运行 bootstrap 命令。每次调用它都会从 `.omp/remote-build.json` 读取 `image`、`dockerfile` 和 `bootstrap`；其他字段保持环境准备时的值，直到下一个会话。
-
-|来源|条件|镜像|
-|---|---|---|
-|配置|配置设置了 `image`|直接使用该镜像，从不构建|
-|worktree Dockerfile|配置的 `dockerfile`，否则为 worktree 里 `.devcontainer/Dockerfile`、`Dockerfile` 中第一个存在的普通文件|`rb-project-<project-id>:<hash>`：标签存在时复用，否则以同步过去的 worktree 副本为构建上下文构建|
-|preparer subagent|worktree 里没有 Dockerfile|由 subagent 准备，并作为 worktree Dockerfile `.omp/remote-build.Dockerfile` 发布，见下文|
-
-`rebuild: "image"` 即使标签已存在也会构建 Dockerfile，例如上游软件包更新之后。`rebuild: "prepare"` 重新运行 preparer 并替换 `.omp/remote-build.Dockerfile`；worktree Dockerfile 是手写的时候会被拒绝。修改 Dockerfile 不需要这两者：内容哈希不同就是不同的标签，下一次调用时构建。
-
-之后每次调用都会从镜像重建容器（已打开的容器会话会结束）；如果配置设置了 `bootstrap`，就在一个一次性容器 `rb-boot-<id>` 的工作目录里用 `<shell> -c` 运行它，该容器有相同的挂载和环境变量。它用于挂载目录内按 worktree 区分的状态，例如 `bun install`，必须是幂等的。
-
-**构建。** Periphery 运行在一个看不到 `remoteRoot` 的容器里，所以镜像构建不使用 Komodo Builds。每次构建都是一个 `docker:cli` 的一次性 Deployment，名为 `rb-build-<id>`，它挂载主机的 Docker socket 和构建上下文，运行 `docker build`。当 Dockerfile 的某个阶段是 `FROM rb-base-archlinux:latest` 而该镜像缺失时（它和其他未使用的镜像一样会被清理），插件先用 [`images/archlinux.Dockerfile`](images/archlinux.Dockerfile) 构建它：带 `base-devel`、`git`、`sudo` 和 `paru` 的 Arch Linux。构建和 bootstrap 容器以重启策略 `no` 运行一次，它们的 Deployment 会被下一次运行复用。
-
-**Preparer subagent。** 没有 Dockerfile 时，`remote_env_init` 确保基础镜像存在，用它部署 worktree 容器，并以会话的模型在 worktree 里运行一个 `remote-env-preparer` subagent。subagent 阅读项目、在容器里试验，然后调用 `remote_env_build_image`，传入一个最终阶段为 `FROM rb-base-archlinux:latest`、不含 `COPY` 或 `ADD` 的 Dockerfile，以及一条 bootstrap 命令。它用 `pacman` 安装官方软件包，用 `paru` 安装 AUR 软件包，有 `-bin` 版本时一律选它。`remote_env_build_image` 从一个空的临时上下文 `<remoteRoot>/prepare/<id>/` 构建候选镜像，用它重建容器并运行 bootstrap 命令；最后一个成功的候选保留在该临时目录里。项目的构建和测试在该容器里通过后，subagent 结束。它的最终回答是 subagent 通过 `yield` 提交、由 harness 按固定 schema 校验的结构化报告；只有该报告的 `result` 为 `success` 时，`remote_env_init` 才会发布到 worktree，每个文件都通过原子 rename 写入，配置最后写：
-
-|文件|内容|
-|---|---|
-|`.omp/remote-build.Dockerfile`|最后一个成功的候选 Dockerfile，逐字节相同，所以它的标签就是已经构建好的镜像|
-|`.omp/remote-build.preparer.md`|subagent 的最终回答，开头是它所描述的 Dockerfile 的 SHA-256|
-|`.omp/remote-build.json`|`dockerfile` 设为 `.omp/remote-build.Dockerfile`，`bootstrap` 设置或移除；其他字段保留，以 2 空格缩进的 JSON 重写|
-
-之后会删除临时目录。请提交这三个文件：有它们的 worktree 和构建主机会直接复用或据此重建镜像，无需再次准备。检出时没有这些文件的 worktree（例如来自尚未合并这些文件的分支）会自己运行 preparer。之后的报告会展示 `.omp/remote-build.preparer.md`，并在报告写成后 Dockerfile 又有改动时加一条 `note`。`remote_env_build_image` 只对 preparer 可用，preparer 不能调用 `remote_env_init`。
-
-**报告。** `remote_env_init` 以 `key: value` 行的形式给 agent 返回：`status`（`ready` 或 `failed`）、`worktree`、`project`、`container`、`image`、`image_source`、`persisted`、`base_image`、`note`、`build_output_tail`、`bootstrap`、`bootstrap_exit_code`、`bootstrap_output_tail`、`preparer_report`、`usage`，失败时还有 `error`。不适用的字段省略。输出尾部截断到 80 行或 8 KiB。失败的 init 以工具错误返回同样的报告，所以每个已完成的步骤都可见。
-
-### 同步什么
-
-副本是单向的：本地 → 远端。容器创建的文件（构建输出、缓存）留在远端，从不回传。`.git` 从不同步。git 生效的忽略来源会转换成 Mutagen 忽略模式：`core.excludesFile`（默认 `$XDG_CONFIG_HOME/git/ignore`）、`.git/info/exclude`，以及未被忽略目录里的每个 `.gitignore`，并遵守 `core.ignoreCase`。匹配忽略规则的已跟踪文件仍会同步。因此被忽略的构建输出不会传过去，而是在容器里重新构建。此外：
-
-- `ignore` 追加 Mutagen 模式；
-- `include` 重新包含 git 忽略但容器需要的路径；
-- `containerFiles` 的目标被排除在同步之外，单独上传，所以一个文件可以只存在于远端（例如容器专用的工具配置）。
-
-忽略集合在创建 Mutagen 会话时固定。修改忽略规则后，终止该会话（见[清理](#清理)），下一次准备时会重新创建。
-
-## 要求
-
-|组件|说明|
-|---|---|
-|`omp`|插件从 `~/.omp/plugins` 加载。基于 `@oh-my-pi/pi-coding-agent` 18.6 开发。|
-|[`omp-unified-exec`](https://github.com/oh-my-omp/omp-unified-exec)|作为 omp 插件安装。容器工具复用它当前的 `ExecSession` API、渲染后的终端观察和转义解码，以 `omp-unified-exec/src/*` 导入，所以必须以这个名字安装在本插件旁边。|
-|可用的 PTY 后端|omp 宿主必须提供 Bun 原生的 `Bun.Terminal`。`container_exec` 在检查或打开容器终端之前调用 `omp-unified-exec` 的运行时准入检查；宿主缺少该能力时，报告 `Container PTY unavailable` 及运行时要求，插件的其余部分照常工作。|
-|[Mutagen](https://mutagen.io)|本地有 `mutagen` CLI。它的守护进程按需启动，通过 SSH 连到构建主机并自动在那里安装 agent。|
-|SSH|对构建主机有非交互、基于密钥的访问（`ssh -o BatchMode=yes <host> true` 必须成功）。|
-|[Komodo](https://komo.do) Core + Periphery|本地机器能访问 Core。构建主机注册为 Komodo **Server**，运行着 Periphery，并有可用的 Docker 守护进程。基于 Komodo v2.2 开发。|
-|`km`（komodo-cli）|用于容器终端（`km exec`）。它的配置文件还提供插件使用的 Core URL 和 API 凭据，两条路径共用一个来源。|
-|`git`、Bun|`git` 用于发现 worktree 和转换忽略规则。Bun 随 omp 提供。|
-|构建主机可访问镜像仓库和 AUR|镜像构建会拉取 `docker:cli`、Dockerfile 里指定的镜像和 `archlinux:latest`；基础镜像从 AUR 克隆 `paru` 并编译（`paru-bin` 二进制链接的 `libalpm` 比当前 pacman 附带的旧）。|
-
-**Komodo 权限。** km profile 里的 API key 必须能读取 Servers、Deployments 和 Updates；在构建主机的 Server 上查看 Docker 镜像和容器、读取容器日志；创建和更新 Deployments；执行 `Deploy`；并在该 Server 上打开容器终端。
-
-## 安装
-
-```bash
-omp install https://github.com/oh-my-omp/omp-unified-exec#release   # 依赖，装一次
-omp install https://github.com/oh-my-omp/omp-remote-build#release
-```
-
-两个安装都跟随 `release` 分支；更新时重新执行同一条 `omp install <url>`。安装或更新后重启 `omp`。
-
-然后创建下文描述的两个配置文件，并重启 `omp`。
-
-## 发布
-
-`main` 是开发集成分支，`release` 是分发分支，所以合并 PR 不改变版本号。PR 改为在 [`CHANGELOG.md`](CHANGELOG.md) 的 `## [Unreleased]` 下写条目：暂存改动后运行 lgit（`git add`，再 `uvx --from lgit-cli lgit`），由它连同条目一起提交。
-
-每天 GMT+9 02:00 的定时运行把 `## [Unreleased]` 发布成新版本，升多少由有条目的分类决定。该运行升 `package.json` 的版本，在 `main` 上提交 `chore: release X.Y.Z`，打 tag `vX.Y.Z`，把 `release` 移到同一提交，并创建对应的 GitHub Release。`## [Unreleased]` 为空时当天不发布；维护者也可以在 Actions 页面手动启动一次运行。
-
-## UI 语言
-
-面向用户的标签、状态和通知在每次生成时按以下顺序解析语言：
-
-1. `OMOMP_LANG`：去掉首尾空白、不区分大小写，为 `en` 或 `zh` 时采用；不支持的值忽略。
-2. `LC_ALL`、`LC_MESSAGES`、`LANG` 中去掉首尾空白后第一个非空的值：以 `zh` 开头时使用中文（不区分大小写），否则使用英文。
-3. 英文。
-
-每次解析都会重新读取环境变量。发给模型的文字不使用这套语言选择逻辑。
-
-通知中由插件生成的诊断详情也在通知生成时使用同一语言。命令输出和其他外部错误内容保持原样；工具说明、报告和工具错误仍使用面向模型的英文。
-
-## 配置
-
-### 1. 主机配置（每个用户）：`~/.omp/agent/remote-build.json`
-
-文件位于 omp 的 agent 目录：默认 `~/.omp/agent`，或当前 profile 下 omp agent 目录指向的位置。它描述唯一的构建主机。每次检查都会重新读取，所以修改无需重启 omp 即生效。示例见 [`examples/remote-build.host.json`](examples/remote-build.host.json)：
-
-```json
-{
-  "ssh": "build-host",
-  "remoteRoot": "/srv/remote-build",
-  "komodo": {
-    "profile": "build",
-    "server": "build-host",
-    "cliConfig": "~/.config/komodo/komodo.cli.toml"
-  },
-  "bin": {
-    "km": "km",
-    "mutagen": "mutagen"
-  }
-}
-```
-
-|字段|必填|默认值|含义|
-|---|---|---|---|
-|`ssh`|是|—|构建主机的 SSH 目标：`~/.ssh/config` 里的别名或 `user@host`。供 `ssh` 使用，也作为 Mutagen 的 beta 端点（`<ssh>:<remoteRoot>/<id>`）。|
-|`remoteRoot`|是|—|构建主机上的绝对目录，每个环境在其中有一份副本。Periphery 管理的 Docker 守护进程会 bind mount 它下面的路径，所以它必须是该守护进程能访问的主机路径。|
-|`komodo.profile`|是|—|`komodo.cliConfig` 中 `[[profile]]` 的 `name` 或它的某个 `aliases`。|
-|`komodo.server`|是|—|运行容器的 Komodo Server（Periphery）名称。|
-|`komodo.cliConfig`|否|`~/.config/komodo/komodo.cli.toml`|km CLI 配置文件。开头的 `~/` 会被展开。必须是单个文件：不复现 km 的目录、关键字和环境变量配置合并。|
-|`bin.km`|否|`km`|km 可执行文件。裸名称通过 `PATH` 解析。如果 omp 启动时没有你 shell 的 `PATH`，请用绝对路径。|
-|`bin.mutagen`|否|`mutagen`|Mutagen 可执行文件，解析规则相同。|
-
-未知字段会被拒绝。
-
-引用的 km profile 形如下例。插件读取 `host`、`key` 和 `secret`，从不打印它们：
-
-```toml
-[[profile]]
-name = "build"
-host = "https://komodo.example.com"
-key = "K-..."
-secret = "S-..."
-```
-
-### 2. 项目选择加入（每个仓库）：`.omp/remote-build.json`
-
-把它提交到仓库根目录，仓库的每个 worktree 就都带有它。示例见 [`examples/project.remote-build.json`](examples/project.remote-build.json)：
-
-```json
-{
-  "image": "rust:1-bookworm",
-  "workdir": "/workspace",
-  "shell": "bash",
-  "ignore": ["*.log"],
-  "include": [".env.build"],
-  "containerFiles": {
-    ".cargo/config.toml": ".omp/container-cargo-config.toml"
-  },
-  "volumes": ["rb-cargo-registry:/usr/local/cargo/registry"],
-  "env": {
-    "CARGO_TARGET_DIR": "/workspace/target"
-  }
-}
-```
-
-|字段|必填|默认值|含义|
-|---|---|---|---|
-|`image`|否|—|构建/测试容器的现成镜像。准备环境时自动部署容器，`remote_env_init` 会重新部署它。与 `dockerfile` 互斥。|
-|`dockerfile`|否|依次探测 `.devcontainer/Dockerfile`、`Dockerfile`|项目镜像的 Dockerfile（相对仓库路径），由 `remote_env_init` 以 worktree 为上下文构建。没有 `image`、`dockerfile`，worktree 里也没有 Dockerfile 时，由 subagent 准备镜像，并把此字段设为 `.omp/remote-build.Dockerfile`（见[环境镜像](#环境镜像)）。|
-|`bootstrap`|否|无|单行 shell 命令，每次 `remote_env_init` 部署后在一个新容器的工作目录里用 `<shell> -c` 运行，例如 `bun install`。准备出的镜像会把它设为 preparer 的命令。|
-|`workdir`|否|`/workspace`|副本在容器内的挂载点（绝对路径），也是容器的工作目录。|
-|`shell`|否|`bash`|`container_exec` 在容器里启动、并用来运行 `bootstrap` 的程序；镜像里必须有它。|
-|`ignore`|否|`[]`|额外的 Mutagen 忽略模式（Mutagen 语法，相对 worktree 根），在转换后的 git 忽略规则之后应用。|
-|`include`|否|`[]`|被 git 忽略但仍需同步的相对仓库路径。|
-|`containerFiles`|否|`{}`|*远端目标* → *本地来源* 的映射，都是相对仓库路径。每个目标都排除在同步之外，每次准备时把来源文件的内容上传到目标。|
-|`volumes`|否|`[]`|额外的 `docker run -v` 规格（`host-or-volume:container[:mode]`），通常是在多个环境间共享的命名缓存卷。|
-|`env`|否|`{}`|额外的容器环境变量。|
-
-相对路径不能是绝对路径，也不能包含 `..`；未知字段会被拒绝。由于 Komodo 键值解析器的限制，`volumes` 和 `env` 的值不能包含 CR、LF、NUL 或 ` #` 序列。
-
-容器以重启策略 `unless-stopped` 运行 `sleep infinity`。所有工作都通过 PTY 工具进行。
-
-## 用法
-
-1. 在一个已选择加入的仓库里启动 `omp`，执行 `/worktree <branch>`（或 `/wt`）。插件先检查 SSH 和 Komodo；任一失败，命令会报错并被拒绝，不会创建 worktree。
-2. omp 创建 worktree 并把会话移进去。状态栏显示 `remote-build: preparing <root>`，直到出现 `remote-build: ready rb-<id>` 通知。在此期间的工具调用会等待。
-3. 除非配置指定了 `image`，agent 在第一次 `container_exec` 之前调用 `remote_env_init`；对没有运行的容器调用 `container_exec` 会失败，并提示调用它。依赖变化后，agent 修改 Dockerfile（准备出来的 Dockerfile 则以 `rebuild: "prepare"` 调用 `remote_env_init`），再调用一次 `remote_env_init`。请提交 preparer 运行发布的文件。
-4. agent 照常在本地编辑，用容器工具构建和测试：
-
-|工具|作用|
-|---|---|
-|`remote_env_init`|解析项目镜像，用它重建 worktree 容器并运行 bootstrap 命令；返回[环境镜像](#环境镜像)中描述的报告。`rebuild: "image"` 从 worktree Dockerfile 重建镜像；`rebuild: "prepare"` 重新运行 preparer。|
-|`container_exec`|在当前 worktree 的容器里打开一个运行 `shell` 的 PTY，可附带初始输入（会解码 `\n`、`\x03`、`\x1b` 等 C 风格转义；不会追加换行）。返回一个 `session_id`，以及 `yield_time_ms`（默认 10 s，范围 0.25–30 s）内收集到的输出。|
-|`container_write_stdin`|向已有会话发送输入，或轮询它（不传 `chars`）。等待窗口默认 250 ms。|
-|`container_list_sessions`|列出本环境的 PTY 会话，包括最终输出尚未被轮询的已结束会话。|
-|`container_kill_session`|终止本地 `km` 客户端（SIGTERM，2 s 后 SIGKILL）。这不会停止容器，远端 shell 可能比它活得久；优先发送 `exit\n`。|
-
-六个工具的详细调用说明都位于 `xd://<tool>/usage`，由简短的 `xd://<tool>` 工具说明指向。topic 涵盖会话生命周期与传输层退出状态，或初始化与 preparer 发布要求。
-
-这些工具和 preparer 专用的 `remote_env_build_image` 以未激活状态注册，因此会话启动时基础系统提示词里不含它们。它们在已选择加入的项目的任何目录里启用，包括主检出，只要该项目的 `.omp/remote-build.json` 能正确解析；因此项目内的 `/wt` 和 `/move` 不会改变工具集合和提示词缓存。在主检出里调用时，它们会报告环境只存在于 git worktree 中。激活的工具集合只在会话开始和切换会话时写入，按规范顺序（内置工具按注册表顺序在前，其余名称按字典序），写入的工具就是该会话的基线。移动（`/worktree`、`/wt`、`/move`，或 omp-config 的 `wt` 等扩展工具）让会话离开所有已选择加入的项目时，这些工具仍然保留：在下一个智能体回合开始前，或在造成移动的那批工具调用之后，插件追加一条隐藏的 `<system-reminder source="omp-remote-build/tools">` 消息，列出不可用的工具和原因，对它们的调用以同样的原因拒绝；移回项目后撤回这条消息。因此系统提示词和工具列表逐字节不变，提示词缓存也保持命中。只有在所有已选择加入的项目之外开始、之后移入某个项目的会话，才会改写一次激活的工具集合来加入这些工具。preparer 得到容器工具和 `remote_env_build_image`；其他会话得到容器工具和 `remote_env_init`。激活通过 `setActiveTools` 完成，因此这些工具以顶层工具呈现，而不是 `xd://` 设备。
-
-`km exec` 本身总是以 0 退出，所以传输层的退出码不能说明你的命令结果。请从 shell 里读取命令结果，例如 `cargo test; echo $?`。会话运行时，每个结果显示渲染后的终端：自上次调用以来滚出屏幕的行，然后是当前屏幕；没有变化时显示 `(screen unchanged since the last call)`。已结束的会话返回不可变的最终活动屏幕。实时更新在输出解析后读取不消费轮询观察的屏幕快照，以 250 ms 节流，并在调用仍附着期间补发尾次更新。输出经过净化，并按 omp 默认的尾部限制截断；完整记录保存在会话的 `log_path`。会话限定在当前 cwd 的环境内。轮询已结束会话的最终输出或终止会话时，先释放终端再移除会话；omp 关闭时终止所有剩余的本地传输并释放其活动终端。
-
-## 清理
-
-插件只创建资源、从不删除，所以删除 worktree 会留下它的环境。要删除一个环境：
-
-```bash
-mutagen sync list --label-selector=remote-build      # 找到 rb-<id>
-mutagen sync terminate rb-<id>
-# Komodo：删除 Deployment rb-<id>、rb-boot-<id> 和 rb-build-<id>（UI 或 API），这会删除它们的容器
-# 容器以 root 运行，所以它们在副本里创建的文件（node_modules 等 bootstrap 输出）属于 root：
-ssh <host> docker run --rm -v <remoteRoot>:/rb archlinux:latest rm -rf /rb/<id>
-```
-
-项目镜像无需清理：没有容器使用它们后，构建主机的镜像清理会删除它们，下一次 `remote_env_init` 从仓库的 Dockerfile 重建。基础镜像 `rb-base-archlinux:latest` 也一样。`<remoteRoot>/base/archlinux` 存放它的构建上下文，`<remoteRoot>/prepare/<id>` 存放一次 preparer 运行的临时上下文；两者都会被下一次需要它们的运行重写。
-
-`volumes` 里列出的命名卷在环境之间共享，不属于任何单个环境。
-
-## 安全说明
-
-- 凭据只来自你指定的 km CLI 配置文件。解析错误的报告不回显文件内容；Komodo 的错误响应体会被丢弃而不展示，因为其中可能回显环境变量的值。
-- Deployment 以 `skip_secret_interp: true` 创建，所以 Komodo 不会把它的 secret 变量插值到容器配置里。
-- `env` 的值以明文出现在 Komodo Deployment 配置里，不要在那里放 secret。
-
-## 限制
-
-- 每份用户配置只有一个构建主机；不支持按项目选择主机。
-- 副本是单向的。远端的改动（生成的文件、在容器里运行的格式化输出、`bootstrap` 创建的文件）不会同步回来。
-- 每次非只读工具调用后的 flush 都会给该调用增加一次同步往返。
-- Mutagen 忽略集合在会话创建时固定。
-- 没有自动拆除（见[清理](#清理)）。
-- `container_*` 工具需要 omp 宿主提供原生 `Bun.Terminal`。
-- 每次 `remote_env_init` 都会重建容器，这会结束已打开的容器会话，并丢弃容器里写在挂载目录之外的内容。
-- 镜像只以 Dockerfile 内容为键。会 `COPY` 变化中的构建上下文文件，或其 `RUN` 步骤拉取不断更新的上游软件包的 Dockerfile，需要 `rebuild: "image"` 才能拿到这些变化。
-- 构建主机的镜像清理可能在两次会话之间删除项目镜像；下一次 `remote_env_init` 会重建它，需要一次构建的时间。基础镜像也以同样方式重建，所以对 [`images/archlinux.Dockerfile`](images/archlinux.Dockerfile) 的修改要等旧镜像被清理或删除后才会到达构建主机。
-- 准备好的 Dockerfile 只能经由 git 到达其他 worktree：检出时没有已发布文件的 worktree 会再次运行 preparer。
-
-## 开发
-
-```bash
-bun install
-bunx tsc --noEmit -p .
-bun test
-```
-
-开发依赖 `omp-unified-exec` 提供类型检查和用 `omp -e src/index.ts` 从本检出加载插件时使用的 API。该 API 更新后执行 `bun update omp-unified-exec`。运行时，已安装的插件使用作为 omp 插件安装的那份副本。要针对本地 unified-exec 检出做检查时，临时让开发依赖解析到该检出，完成类型检查后恢复依赖解析，不提交此临时改动。
-
-`src/komodo.ts` 是唯一的容器后端边界：`komodoReachable`、`ensureContainer`、`runOnce`、`buildImage`、`imageExists`、`containerRunning` 和 `execArgv`。其他模块都不构造 Komodo 请求或 `km` argv。
-
-## 许可
-
-MIT
+- **工具注册与可用性**
+  - 插件工具集 — 功能：注册六个 agent 工具（`container_exec`、`container_write_stdin`、`container_list_sessions`、`container_kill_session`、`remote_env_init`、`remote_env_build_image`），全部 `defaultInactive: true` 并各自提供一个 `usage` `docTopics()` topic。时机：插件加载时（`package.json` 中 `omp.extensions: ["./src/index.ts"]`）。实例：`src/container-tools.ts` 中的 `pi.registerTool(execTool)`，`src/init.ts` 中的 `pi.registerTool(initTool)`/`pi.registerTool(buildTool)`。
+  - 基线启用集写入 — 功能：计算会话 cwd 适用哪些插件工具，并按规范顺序写入启用工具集使 system/tools 前缀保持缓存稳定，该集合成为本生命周期的基线。时机：`session_start`（强制写入）与 `session_switch`。实例：`startLifecycle` 中的 `applyActiveTools(pi, [...current.filter((name) => !(name in PLUGIN_TOOLS)), ...own])`。
+  - 按目录的可用性 — 功能：仅当选入的项目内（worktree 根含有效 `.omp/remote-build.json`）授予四个 `container_*` 工具，外加 `remote-env-preparer` agent 的 `remote_env_build_image` 或其他 agent 的 `remote_env_init`；配置无效或 cwd 在所有项目之外则一个都不给。时机：每次 `before_agent_start` 求值，以及 cwd 移动后的 `tool_result` 批次。实例：`availabilityFor` 返回 `[...CONTAINER_TOOLS, ctx.agent.name === PREPARER_AGENT_NAME ? "remote_env_build_image" : "remote_env_init"]`。
+  - `tools` 提醒差分 — 功能：注入或撤回一条隐藏差分消息，告诉模型哪些基线工具当前不可用及原因，使目录移动改变可用性时不必在生命周期中途重写启用集。时机：`before_agent_start`（`atPrompt`）与移动后的 `tool_result` `additionalContext`（`afterTools`），回合边界由 `turn_start`（`deltas.turnStarted()`）跟踪。实例：`<system-reminder source="omp-remote-build/tools">`，内容为 `These remote-build tools are listed but unavailable: remote_env_init. Reason: the current directory … is not inside a project whose worktree root has a valid .omp/remote-build.json.`
+  - `tool_call` 可用性拒绝 — 功能：拒绝调用当前 cwd 不具备条件的基线工具，原因与差分消息相同。时机：`tool_call`，工具运行前。实例：`{ block: true, reason: unavailableBody([event.toolName], availability) }`。
+  - `xd://<tool>/usage` topic — 功能：通过 `docTopics()` 按需向模型提供每个工具的详细调用说明，内容取自 `src/topics/<tool>/usage.md`。时机：模型读取 `xd://<tool>/usage` 时。实例：每个工具说明都以 `` `xd://container_exec/usage` — before opening a container terminal or interpreting its exit status `` 结尾。
+- **环境生命周期**
+  - `/worktree` 主机门 — 功能：在选入的项目内输入 `/worktree` 或 `/wt` 创建 worktree 之前，验证构建主机的 `ssh -o BatchMode=yes` 连通和 Komodo Core 的 `ListServers` 可用，失败则拒绝命令、不创建 worktree。时机：`input` 事件匹配 `/^\/(?:wt|worktree|move)(?:\s|$)/`，预检只对 `/worktree`/`/wt` 生效。实例：拒绝通知 `remote-build: build host check failed, worktree not created: <reason>`，并返回 `{ handled: true }`。
+  - 移动后环境准备 — 功能：会话 cwd 移动到新 worktree 后，开始准备它的环境，运行期间显示 `remote-build` 状态行，结束时通知结果。时机：同一个 `input` 钩子之后异步执行，仅对从选入项目发出的 `/worktree`/`/wt`，`waitForMove` 轮询 `sessionManager.getCwd()` 至多 10 分钟。实例：`remote-build: ready rb-<id> <- <worktree root>`（info）或 `remote-build: environment failed for <root>: <reason>`（error）。
+  - `session_start` 准备 — 功能：为 isolated subagent 自己的独立工作区，或已有 `rb-env=<id>` Mutagen 会话的非主检出 worktree（重新打开或恢复的会话），在后台开始环境准备。时机：`session_start`，在启用集写入之后。实例：`ctx.agent.kind === "sub" && isIsolatedSubagent(ctx)` → `begin(project.root, project.config)`。
+  - 按需 `ensureEnv` 准备 — 功能：首次在已选入的、尚无环境状态的 worktree 中调用 `remote_env_init` 或 `container_*` 工具时按需准备环境，来自主检出的调用被拒绝。时机：每个工具的 `execute` 内部。实例：错误 `remote-build environments exist only in git worktrees; <root> is the main checkout`。
+  - `prepareEnv` 拉起 — 功能：幂等地检查主机、找到或创建带 `rb-env=<id>` 标签的 Mutagen 会话、执行 flush、经 ssh 把每个 `containerFiles` 条目上传到远端副本，并仅对配置的 `image` 确保 `rb-<id>` Deployment 运行它。时机：由每个准备触发点调用。实例：`PreparedEnv { id, root, remotePath: "<remoteRoot>/<id>", mutagenSession, container: "rb-<id>", config, host }`。
+  - 环境状态门禁 — 功能：按 worktree 的 `preparing`/`ready`/`failed` 环境状态门禁该 worktree 内的一切工具调用，`preparing` 时等待其 Promise（不另加超时），`failed` 后所有调用被拦截并返回错误。时机：`tool_call`。实例：`{ block: true, reason: "remote-build environment failed: <error>" }`。
+  - 隐式 Mutagen flush — 功能：凡不在只读名单上的工具产生结果后，若该 worktree 的环境已就绪，就执行一次 `mutagen sync flush`，让本地写入（包括其他扩展拥有的写工具）在 agent 的下一步之前到达远端副本。时机：`tool_result`。实例：`NON_WRITING_TOOLS` 为 `read`、`grep`、`glob`、`ast_grep`、`web_search`、`todo`、`ask`、`ctx`、`wait`、四个 `container_*` 工具和 `remote_env_build_image`；其余全部触发 flush。
+  - 关闭时 PTY 清理 — 功能：对本插件实例拥有的所有容器 PTY 直接发 SIGKILL 并释放终端，不用优雅终止因为 shutdown 处理在 2 秒后会被中止。时机：`session_shutdown`。实例：对 `SessionStore` 的每个条目执行 `terminateSession(session, "immediate")`，然后 `session.releaseForShutdown()`。
+  - 状态行与通知 — 功能：在 `remote-build` 状态行报告环境进度，并就绪、失败和工具更新失败发出通知，使用解析出的界面语言。时机：input 钩子的准备过程和 `remote_env_init` 的各阶段。实例：状态 `remote-build: init deploy and bootstrap` / `remote-build：初始化部署并运行 bootstrap`；通知 `remote-build: updating tools failed: <reason>`。
+- **环境工具**
+  - `remote_env_init` — 功能：解析项目镜像、在标签缺失时构建、用它重建 `rb-<id>` 容器（结束已打开的容器会话）、运行 `bootstrap`，并返回 `key: value` 报告。时机：模型在首次 `container_exec` 前或依赖变化后调用；`rebuild: "image"` 在标签已缓存时也重建，`rebuild: "prepare"` 重跑准备器（配置为 `image` 或手写 Dockerfile 时拒绝）。实例：报告键 `status`、`worktree`、`project`、`container`、`image`、`image_source`、`persisted`、`base_image`、`note`、`build_output_tail`、`bootstrap`、`bootstrap_exit_code`、`bootstrap_output_tail`、`preparer_report`、`usage`，失败时加 `error`；topic `` `xd://remote_env_init/usage` ``。
+  - `liveEnv` 配置重读 — 功能：每次 init 调用重新读取 `.omp/remote-build.json`，只应用 `image`/`dockerfile`/`bootstrap`，其他字段保持环境准备时的值。时机：`remote_env_init` 与 `remote_env_build_image`。实例：`liveEnv` 返回 `{ ...env, config: { ...env.config, imageSource: config.imageSource, bootstrap: config.bootstrap } }`。
+  - 过期报告 `note` — 功能：把已发布的 `.omp/remote-build.preparer.md` 附进报告，并在其 `dockerfile_sha256` 与当前 Dockerfile 不一致时加一条 `note`。时机：Dockerfile 来源镜像的 `remote_env_init`。实例：`note: .omp/remote-build.preparer.md was written for an earlier version of .omp/remote-build.Dockerfile; its claims may be stale`。
+  - `remote_env_build_image` — 功能：校验候选 Dockerfile（最后阶段必须 `FROM rb-base-archlinux:latest`、不得有 `COPY`/`ADD`、`bootstrap` 单行），在空上下文 `<remoteRoot>/prepare/<id>/build` 中构建 `rb-project-<project-id>:<hash>`、重建容器并运行 bootstrap，再把候选存下供发布。时机：只有 `remote-env-preparer` agent 能调用，且配置为 `image` 或手写 `dockerfile` 时拒绝。实例：错误 `remote_env_build_image is only available to the remote-env-preparer agent; call remote_env_init`；topic `` `xd://remote_env_build_image/usage` ``。
+  - `bootstrap` 运行 — 功能：在环境同等的挂载与环境变量下，于全新的 `rb-boot-<id>` 一次性容器中运行一次 `<shell> -c <bootstrap>`。时机：`remote_env_init` 与 `remote_env_build_image` 内每次容器重新部署之后，上限 30 分钟。实例：`runOnce(env.host, { ...spec, name: "rb-boot-<id>" }, { entrypoint: null, argv: [env.config.shell, "-c", bootstrap] }, { timeoutMs: BOOTSTRAP_TIMEOUT_MS })`。
+- **容器 PTY 工具**
+  - `container_exec` — 功能：经 omp-unified-exec 的 `ExecSession`（120×30）打开一个 `km exec` 进入本环境容器的交互式 PTY，发送可选的经 C 转义解码的 `input`，并返回 `session_id` 及在 `yield_time_ms`（250–30000，默认 10000）内收集到的渲染屏幕。时机：环境容器运行后由模型调用。实例：错误 `Container rb-<id> is not running. Call remote_env_init to prepare this worktree's environment.`；topic `` `xd://container_exec/usage` ``。
+  - `container_write_stdin` — 功能：向容器 PTY 发送字符 —— 省略 `chars` 时则轮询它 —— 并在 `yield_time_ms`（默认 250）内返回输出。时机：模型用 `container_exec` 返回的 `session_id` 调用。实例：`chars` 解码 `\n`、`\r`、`\t`、`\xHH`、`\uHHHH`、`\u{H…}`、`\e`、`\0`、`\\`；未知转义原样保留；topic `xd://container_write_stdin/usage`。
+  - `container_list_sessions` — 功能：列出本环境的 PTY 会话，包括已结束但终态输出尚未被轮询的会话，含 transport 状态、命令、cwd、日志路径与失败消息。时机：模型调用时。实例：`{"session_id": 1, "transport": {"status": "exited", "km_exit_code": 0, "signal": null}, "command": …, "log_path": …}`；topic `` `xd://container_list_sessions/usage` ``。
+  - `container_kill_session` — 功能：先 SIGTERM、2 秒后 SIGKILL 结束会话的本地 `km` 客户端，返回最终屏幕并把它移出会话存储。时机：模型以 `session_id` 调用时。实例：`terminateSession(session, "graceful")`；错误 `Container session <id> km client is still running after SIGKILL…`；topic `` `xd://container_kill_session/usage` ``。
+  - PTY 会话存储 — 功能：以 `maxSessions: 64`（`lruProtectedCount: 8`）限制 PTY 会话数，并把每个会话绑定到它所属环境的根，其他 worktree 的 `session_id` 会被拒绝。时机：每次 `container_*` 调用。实例：错误 `Unknown container session <id> in environment <root>.`
+  - PTY 结果渲染 — 功能：报告渲染后的屏幕 —— 无变化时 `(screen unchanged since the last call)`，无输出时 `(no output)` —— 经净化并按宿主 `DEFAULT_MAX_LINES`/`DEFAULT_MAX_BYTES` 截断，完整转录保留在 `log_path`，滚出屏幕的行被淘汰时附 `history` 提示，并向 `onUpdate` 推送实时快照，每 250 ms 至多一条。时机：每次收集的 `container_*` 调用。实例：`[Output truncated to the last <DEFAULT_MAX_LINES> lines / <DEFAULT_MAX_BYTES> bytes. Full output: <log_path>]`。
+  - `km` 退出码提示 — 功能：transport 的退出状态是本地 `km` 客户端的而不是命令本身的，所以每个结果都附注告诉模型改从 shell 读退出码。时机：附加在每个 `container_exec`/`container_write_stdin`/`container_list_sessions` 结果中。实例：`note: km always exits 0; this is only the local transport's exit code. Read command exit codes from the container shell output, e.g. echo $? immediately after the command.`
+  - `requireBunRuntime` 检查 — 功能：宿主不能提供 Bun 原生 `Bun.Terminal` 时拒绝打开 PTY，检查用 omp-unified-exec 的 `requireBunRuntime`。时机：`container_exec`，spawn 之前。实例：`Container PTY unavailable: <reason>`。
+- **文件同步**
+  - `rb-<id>` Mutagen 会话 — 功能：用 `mutagen sync create` 把 worktree 单向（本地 → 远端）镜像，会话是否存在的权威是 Mutagen daemon，重新准备时按标签查找并复用会话，同一标签出现多个会话是错误。时机：`prepareEnv` 内部。实例：`mutagen sync create --name=rb-<id> --label=remote-build --label=rb-env=<id> --mode=one-way-replica --ignore-vcs <root> <ssh>:<remoteRoot>/<id>`；用 `--label-selector=rb-env=<id>` 查找。
+  - Git 忽略翻译 — 功能：把 git 正在生效的忽略来源翻译成 Mutagen 模式，重新包含被忽略的被跟踪路径与 `include` 条目的祖先，让被忽略但被跟踪的文件照常同步，然后追加配置的 `ignore`、`containerFiles` 目标排除和 `/.git`。时机：Mutagen 会话创建时（`deriveIgnoreRules`），该集合随会话固定。实例：来源为 `core.excludesFile`（默认 `$XDG_CONFIG_HOME/git/ignore`，否则 `~/.config/git/ignore`）、`.git/info/exclude` 和每个未被忽略目录中的 `.gitignore`，并遵循 `core.ignorecase`；被忽略的被跟踪路径来自 `git ls-files --cached -i -z --exclude-standard`。
+- **项目镜像**
+  - 镜像来源解析 — 功能：把项目镜像解析为直接使用的配置 `image`、仓库相对路径的 `dockerfile`、或按顺序探测 `.devcontainer/Dockerfile` 再 `Dockerfile`，解析不到时落到准备器。时机：每次 `remote_env_init` 调用（`planImage`/`resolveDockerfile`）。实例：`DOCKERFILE_CANDIDATES = [".devcontainer/Dockerfile", "Dockerfile"]`。
+  - 内容键控镜像标签 — 功能：项目镜像标签为 `rb-project-<project-id>:<Dockerfile sha256 的前 16 位十六进制>`，标签存在即证明它是该 Dockerfile 的构建结果并被复用，不同的 Dockerfile 得到不同标签。时机：`remote_env_init` 与 `remote_env_build_image` 中。实例：`projectImage(pid, sha256(dockerfile))`。
+  - `docker:cli` 镜像构建 — 功能：在构建主机上用一次性 `docker:cli` Deployment `rb-build-<id>` 构建镜像，它挂载宿主 Docker socket 与构建上下文（worktree Dockerfile 用已同步的副本，候选用空的 `prepare/` 暂存目录），在其中运行 `docker build`。时机：标签缺失或 `rebuild: "image"` 时，上限 60 分钟。实例：`argv: ["build", "--progress=plain", "--tag", spec.image, "--file", "/ctx/Dockerfile", "/ctx"]`。
+  - `rb-base-archlinux` 基础镜像 — 功能：任何 Dockerfile 阶段是 `FROM rb-base-archlinux:latest` 而该镜像缺失时，用随包发布的 `images/archlinux.Dockerfile`（Arch Linux，含 `base-devel`、`git`、`sudo`、`paru`）在构建主机上构建它。时机：`buildProjectImage`/`ensureBaseImage` 内，构建上下文上传到 `<remoteRoot>/base/archlinux`。实例：`stageBases(text).includes(BASE_IMAGE)` 触发 `ensureBaseImage(host, env, signal)`。
+- **准备器子代理**
+  - `remote-env-preparer` 子代理 — 功能：以会话模型在 worktree 中运行捆绑的准备器子代理，工具为 `read`、`grep`、`glob`、`web_search`，并预加载本插件自己的 `src/index.ts` 使其独占 `remote_env_build_image`，它的 `yield` 按严格输出 schema 校验。时机：`remote_env_init` 带 `rebuild: "prepare"`，或解析不到任何 Dockerfile。实例：`pi.pi.runSubprocess({ ..., outputSchema: PREPARER_OUTPUT_SCHEMA, outputSchemaMode: "strict", preloadedExtensionPaths: [fileURLToPath(new URL("./index.ts", import.meta.url))] })`，id `rb-prep-<id>-<time>`。
+  - `PREPARER_PROMPT` 规则 — 功能：指示准备器产出一个装下工具链与依赖但不装项目代码的镜像 —— 最后阶段 `FROM rb-base-archlinux:latest`、官方包用 `pacman`、AUR 包用 `paru` 的 `-bin` 变体、不得有 `COPY`/`ADD`、单行幂等 bootstrap —— 且只有最终容器里构建与测试都退出 0 才报 `result: success`。时机：作为子进程的 `systemPrompt`/`assignment`。实例：``The final stage of your Dockerfile must start with `FROM rb-base-archlinux:latest` ``；报告字段 `result`、`toolchain`、`packages`、`bootstrap`、`verified`、`how_to`、`caveats`。
+  - 准备器发布 — 功能：仅在 `result: success` 时，把 `<remoteRoot>/prepare/<id>/` 中最后一次成功的候选发布进 worktree —— `.omp/remote-build.Dockerfile`、头部带 `<!-- dockerfile_sha256: <hex> -->` 的 `.omp/remote-build.preparer.md`、以及重写 `dockerfile`+`bootstrap` 的 `.omp/remote-build.json` —— 均经原子重命名且配置最后写，然后删除暂存目录。时机：`remote_env_init` 内准备器完成之后。实例：报告字段 `persisted: .omp/remote-build.Dockerfile, .omp/remote-build.preparer.md, and dockerfile/bootstrap in .omp/remote-build.json; commit them so other worktrees and build hosts reuse this definition`。
+- **Komodo 后端**
+  - 凭据加载 — 功能：从 `komodo.cliConfig` 的 `[[profile]]`（按 `name` 或 `aliases` 匹配）读取 Komodo Core URL 与 API `key`/`secret`，每次调用都重新读取使凭据轮换来得及生效，且不回显 TOML 解析内容或可能含值的错误体。时机：每次 Core 请求前的 `loadEndpoint()`；`checkHost` 以 `ListServers` 验证连通。实例：`ssh -o BatchMode=yes -o ConnectTimeout=5 <host> true` 然后 `komodoReachable(host)`。
+  - `rb-<id>` Deployment — 功能：使 Deployment 的受管字段收敛（image、`command: sleep infinity`、以 `<remotePath>:<workdir>` 为首的 volumes、environment、`--workdir`、`restart: unless-stopped`、`skip_secret_interp: true`），不存在则创建、漂移则更新，执行 `Deploy` 并等待 Update 完成和 `running` 状态，`ensure` 在配置未变且运行中时跳过部署而 `redeploy` 总是重建。时机：`prepareEnv`（配置 `image` 时）与每次 `remote_env_init`/`remote_env_build_image` 的重新部署。实例：`upsertDeployment` + `deploy` 轮询 `GetUpdate` 至多 10 分钟，再 `waitRunning` 至多 60 秒。
+  - `runOnce` 一次性任务 — 功能：在 `rb-boot-<id>` 与 `rb-build-<id>` Deployment（`restart: no`）中跑一次性任务，等待容器退出 —— Core 报 `unknown` 时直接 inspect 容器 —— 然后读取 `State.ExitCode` 与最后 300 行日志。时机：经 `runOnce` 的 bootstrap 运行与镜像构建。实例：`requestOrAbsent(..., /No such container/)` 与 `GetContainerLog { tail: 300, timestamps: false }`。
+  - `imageExists`/`containerRunning` 探测 — 功能：经 `InspectDockerImage`（`No such image` 视为不存在）与 Deployment 的缓存状态探测 Docker 状态，把 `paused`/`restarting`/`stopping`/`removing` 视为运行中，状态为 `unknown` 时改为 inspect 容器本身。时机：`remote_env_init` 的镜像缓存检查与 `container_exec` 的预检。实例：`imageExists(host, "rb-project-<id>:<hash>")`。
+  - `km exec` transport — 功能：用指向同一 profile 的本地 km CLI 构造容器 PTY 的 transport argv，使交互 shell 与 API 共用一份凭据来源。时机：每次 `container_exec` spawn。实例：`[bin.km, "-c", cliConfig, "-p", profile, "exec", "--server", server, container, shell]`。
+- **配置与环境变量**
+  - `.omp/remote-build.json` — 功能：worktree 根的该文件让整库选入，字段为 `image`/`dockerfile`（互斥）、`bootstrap`（单行）、`workdir`（绝对路径，默认 `/workspace`）、`shell`（默认 `bash`）、`ignore`、`include`、`containerFiles`、`volumes`、`env`，未知字段、相对路径写成绝对路径以及 `..` 段都被拒绝。时机：每次可用性检查解析，并由 `remote_env_init` 重新读取。实例：`examples/project.remote-build.json`。
+  - `<agentDir>/remote-build.json` — 功能：指定唯一的构建主机 —— `ssh`、`remoteRoot`（主机绝对路径）、`komodo.profile`、`komodo.server`、`komodo.cliConfig`（默认 `~/.config/komodo/komodo.cli.toml`，会展开 `~/`）与可选的 `bin.km`/`bin.mutagen` —— 每次使用都重新读取，改动无需重启 omp 即生效。时机：每次主机检查、准备与 Komodo 调用中的 `loadHost()`。实例：`examples/remote-build.host.json`。
+  - i18n 环境变量 — 功能：面向人的状态、通知与工具标签的语言按 `OMOMP_LANG`（`en`/`zh`）解析，否则取 `LC_ALL`/`LC_MESSAGES`/`LANG` 中第一个非空值（以 `zh` 开头则用中文），否则英文，每次生成文字时重新读取。时机：生成任何通知、状态或标签时（`tr()`）。实例：`tr("remote-build: preparing ", "remote-build：正在准备 ")`。
+  - `GIT_*` 环境变量回退 — 功能：设置了 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_CEILING_DIRECTORIES` 或 `GIT_COMMON_DIR` 中任何一个时，worktree 发现放弃文件系统 `.git` 上溯、改由 `git rev-parse --show-toplevel` 判断，因为此时 git 看的是上溯不知道的别处。时机：每次 `projectConfig`/`worktreeRootByFs` 调用。实例：`if (process.env.GIT_DIR !== undefined || …) return null;`
+  - `XDG_CONFIG_HOME` — 功能：为规则推导提供全局 git ignore 文件的默认位置。时机：`core.excludesFile` 未设置时的 `deriveIgnoreRules`。实例：`join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "git", "ignore")`。
+- **打包与仓库**
+  - `package.json` 接线 — 功能：把插件接入 omp 与发布通道：`omp.extensions` 指向 `./src/index.ts`，`omomp.changelog` 声明 `CHANGELOG.md`，`files` 随包发布 `src`、`omomp-shared`、`images`、`examples` 与两份 README，`peerDependencies` 把 `omp-unified-exec` `"*"` 标为 optional。时机：插件安装/加载时。实例：`"omp": { "extensions": ["./src/index.ts"] }`。
+  - `omomp-shared` 随包辅助 — 功能：提供与其他 omomp 插件一致的规范顺序启用集写入、`<system-reminder>` 差分流和基于环境变量的语言解析。时机：插件加载时 import。实例：`import { createDeltaStream, type Delta } from "../omomp-shared/context-delta.ts"`，配合 `createDeltaStream("omp-remote-build/tools")`。
+  - `omp-unified-exec` 依赖 — 功能：容器 PTY 层建立在已安装插件的 `ExecSession`、`SessionStore`、输出净化、字符转义解码与 `requireBunRuntime` 之上。时机：`src/container-tools.ts` 以 `omp-unified-exec/src/*` 导入时。实例：`import { ExecSession } from "omp-unified-exec/src/session.ts"` 与 `import { requireBunRuntime } from "omp-unified-exec/src/pty.ts"`。
+  - `accept/` 驱动 — 功能：三个 Bun 验收驱动程序在 stub 的 `ssh`/`mutagen`/Komodo 二进制下以 64 MiB 负载测量 ignore 规则推导、ssh/mutagen transport 与 `containerFiles` 上传的峰值堆增量。时机：手动运行，运行时从不执行。实例：`bun --expose-gc accept/driver.ts <repo-root> [--pattern-out <file>] [--label <s>]`、`bun --expose-gc accept/transport.ts <row1|row2|row3> --src <plugin src dir>`。

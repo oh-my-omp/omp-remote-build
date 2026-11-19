@@ -2,317 +2,64 @@
 
 English | [简体中文](README.zh-CN.md)
 
-An [Oh My Pi (`omp`)](https://github.com/can1357/oh-my-pi) plugin that gives every git worktree its own build/test environment on a remote Docker host:
-
-- a **Mutagen one-way-replica** session mirrors the local worktree to the build host;
-- a **Komodo Deployment** runs a long-lived container on that host with the replica bind-mounted as its working directory;
-- a **project image** holds the project's toolchain and dependencies: a ready image named in the config, the worktree's Dockerfile, or an Arch Linux image prepared once by a subagent and published into the repository as `.omp/remote-build.Dockerfile`. The build host only caches built images, keyed by Dockerfile content, and every worktree with the same Dockerfile reuses them;
-- **`remote_env_init`** prepares the worktree's container from that image and runs the project's bootstrap command;
-- four **`container_*` tools** give the agent an interactive PTY inside that container.
-
-The agent keeps editing files locally with its normal tools. It compiles, tests and runs things on the remote machine through the container tools. Every tool call that could have changed files is followed by a Mutagen flush, so the container sees the edit before the agent's next step.
-
-Projects opt in with one file, `.omp/remote-build.json`. Projects without it are never touched.
-
-## How it works
-
-```mermaid
-flowchart LR
-  subgraph local["Local machine"]
-    A["omp session<br/>cwd = worktree"]
-    W["git worktree"]
-    M["Mutagen daemon"]
-    K["km CLI"]
-  end
-  subgraph remote["Build host"]
-    R["replica dir<br/>remoteRoot/&lt;env-id&gt;"]
-    S["preparer scratch<br/>remoteRoot/prepare/&lt;env-id&gt;"]
-    P["Komodo Periphery + Docker"]
-    B["one-shot docker:cli<br/>rb-build-&lt;env-id&gt;"]
-    I["image rb-project-&lt;project-id&gt;:&lt;dockerfile-hash&gt;"]
-    C["container rb-&lt;env-id&gt;<br/>sleep infinity"]
-  end
-  Core["Komodo Core"]
-  A -->|"read / edit / write"| W
-  W -->|"one-way-replica over SSH"| M --> R
-  A -->|"Core API: create/update + Deploy"| Core --> P
-  P --> B -->|"docker build"| I
-  R -->|"build context (worktree Dockerfile)"| B
-  S -->|"empty build context (preparer candidate)"| B
-  P --> C
-  I -->|"image of"| C
-  R -->|"bind mount at workdir"| C
-  A -->|"container_exec → km exec"| K --> Core
-```
-
-### Environment lifecycle
-
-```mermaid
-sequenceDiagram
-  participant U as User
-  participant P as remote-build
-  participant H as Build host (SSH)
-  participant Co as Komodo Core
-  participant Mu as Mutagen
-  U->>P: /worktree feature-x
-  P->>H: ssh BatchMode true
-  P->>Co: ListServers (authenticated read)
-  Note over P: failure → command is refused, no worktree created
-  P-->>U: omp's native /worktree runs and moves the session
-  P->>Mu: find session labelled rb-env=<id>, else create one
-  P->>Mu: flush
-  P->>H: upload containerFiles over ssh
-  opt config names an image
-    P->>Co: Create/UpdateDeployment rb-<id>, Deploy, wait until running
-  end
-  P-->>U: "remote-build: ready rb-<id>"
-  Note over U,P: otherwise the agent calls remote_env_init (see Environment images)
-```
-
-- **Identity.** An environment belongs to one absolute worktree root. Its id is `<slug>-<hash>`: a slug of the directory name plus 10 hex chars of the SHA-256 of the canonical root path. The Mutagen session is `rb-<id>`, labelled `remote-build` and `rb-env=<id>`. The replica lives at `<remoteRoot>/<id>`, and the Komodo Deployment and its container are both named `rb-<id>`. A project is all worktrees of one repository; its id is derived the same way from the main checkout's path. A project image is tagged `rb-project-<project-id>:<first 16 hex chars of the Dockerfile's SHA-256>`, so an existing tag is always a build of exactly that Dockerfile.
-- **Authority.** The repository owns the environment definition: `.omp/remote-build.json` and the Dockerfile it names, including a prepared `.omp/remote-build.Dockerfile`. Mutagen's daemon decides whether a session exists (looked up by label), Komodo Core decides whether a Deployment exists and is running, and the build host's Docker daemon decides whether an image exists. Built images are only a cache: the build host prunes images no container uses, and the plugin rebuilds a missing one from the Dockerfile. The plugin keeps no state of its own on the build host. Re-preparing is idempotent: an existing session is reused, a Deployment whose managed fields already match and whose container is running is left alone, and a drifted one is updated and redeployed.
-- **When an environment is prepared:**
-  - after `/worktree` (or `/wt`) moves the session into a new worktree of an opted-in project;
-  - at session start inside a non-main worktree that already has a Mutagen session (reopening or resuming a session there);
-  - at session start of an **isolated subagent** (`task` with `isolated: true`), whose separate workspace gets its own environment;
-  - on the first call of `remote_env_init` or a `container_*` tool in a worktree of an opted-in project that has no environment in this session yet.
-  The main checkout never gets an environment; remote environments are a worktree feature. Preparation syncs the worktree and, for a configured `image`, ensures the container. With any other image source the container belongs to `remote_env_init`.
-- **Gating.** While an environment is `preparing`, every tool call in that worktree waits for it. If preparation `failed`, every tool call there is blocked and the error is returned as the block reason. Restart the session after fixing the cause.
-- **Flushing.** After each tool result, the plugin runs `mutagen sync flush` unless the tool is known not to write: `read`, `grep`, `glob`, `ast_grep`, `web_search`, `todo`, `ask`, `ctx`, `wait`, the four `container_*` tools, and `remote_env_build_image` (it only builds on the build host). Everything else (`edit`, `write`, `eval`, `exec_command`, `bash`, `task`, `remote_env_init`, …) counts as a potential write, because its side effects are unknown or, for `remote_env_init`, because it publishes prepared files.
-
-### Environment images
-
-`remote_env_init` resolves the project image, recreates the worktree container `rb-<id>` from it, and runs the bootstrap command. It reads `image`, `dockerfile` and `bootstrap` from `.omp/remote-build.json` on every call; the other fields keep the values the environment was prepared with until the next session.
-
-|Source|When|Image|
-|---|---|---|
-|configured|config sets `image`|that image, used as is; never built|
-|worktree Dockerfile|config `dockerfile`, else the first regular file of `.devcontainer/Dockerfile`, `Dockerfile` in the worktree|`rb-project-<project-id>:<hash>`: reused when the tag exists, otherwise built with the synced worktree replica as build context|
-|preparer subagent|no Dockerfile in the worktree|prepared by a subagent and published as the worktree Dockerfile `.omp/remote-build.Dockerfile`, see below|
-
-`rebuild: "image"` builds the Dockerfile even when its tag exists, for example after upstream packages changed. `rebuild: "prepare"` runs the preparer again and replaces `.omp/remote-build.Dockerfile`; it is refused when the worktree Dockerfile is hand-written. Editing a Dockerfile needs neither: a different content hash is a different tag, built on the next call.
-
-Then every call recreates the container from the image (open container sessions end) and, when the config sets `bootstrap`, runs it with `<shell> -c` in the working directory of a one-shot container `rb-boot-<id>` with the same mounts and environment. It is meant for per-worktree state inside the mount, such as `bun install`, and must be idempotent.
-
-**Builds.** Periphery runs in a container that cannot see `remoteRoot`, so image builds do not use Komodo Builds. Each build is a one-shot Deployment of `docker:cli`, named `rb-build-<id>`, that mounts the host's Docker socket and the build context and runs `docker build`. Whenever a stage of the Dockerfile is `FROM rb-base-archlinux:latest` and that image is missing (it is pruned like any unused image), the plugin builds it first from [`images/archlinux.Dockerfile`](images/archlinux.Dockerfile): Arch Linux with `base-devel`, `git`, `sudo` and `paru`. Build and bootstrap containers run once with restart policy `no`, and their Deployments are reused by the next run.
-
-**Preparer subagent.** Without a Dockerfile, `remote_env_init` ensures the base image, deploys the worktree container from it, and runs a `remote-env-preparer` subagent in the worktree with the session's model. The subagent reads the project, experiments in the container, and calls `remote_env_build_image` with a Dockerfile whose final stage is `FROM rb-base-archlinux:latest`, with no `COPY` or `ADD`, and a bootstrap command. It installs official packages with `pacman` and AUR packages with `paru`, choosing the `-bin` variant whenever one exists. `remote_env_build_image` builds a candidate image from an empty scratch context `<remoteRoot>/prepare/<id>/`, recreates the container from it and runs the bootstrap command; the last successful candidate is kept in that scratch directory. The subagent finishes once the project's build and tests pass in that container. Its final answer is a structured report the subagent submits through `yield` and the harness validates against a fixed schema; only when that report has `result: success` does `remote_env_init` publish into the worktree, each file by atomic rename and the config last:
-
-|File|Content|
-|---|---|
-|`.omp/remote-build.Dockerfile`|the last successful candidate Dockerfile, byte for byte, so its tag is the image already built|
-|`.omp/remote-build.preparer.md`|the subagent's final answer, headed by the SHA-256 of the Dockerfile it describes|
-|`.omp/remote-build.json`|`dockerfile` set to `.omp/remote-build.Dockerfile`, `bootstrap` set or removed; every other field kept, rewritten as 2-space JSON|
-
-The scratch directory is removed afterwards. Commit the three files: worktrees and build hosts that have them reuse or rebuild the image from them without preparing again. A worktree checked out without them, for example from a branch the files were not merged into, runs the preparer itself. Later reports show `.omp/remote-build.preparer.md` and add a `note` when the Dockerfile has changed since the report was written. `remote_env_build_image` is only available to the preparer, and the preparer cannot call `remote_env_init`.
-
-**Report.** `remote_env_init` returns `key: value` lines for the agent: `status` (`ready` or `failed`), `worktree`, `project`, `container`, `image`, `image_source`, `persisted`, `base_image`, `note`, `build_output_tail`, `bootstrap`, `bootstrap_exit_code`, `bootstrap_output_tail`, `preparer_report`, `usage`, and on failure `error`. Fields that do not apply are omitted. Output tails are cut to 80 lines or 8 KiB. A failed init returns the same report as a tool error, so every completed step is visible.
-
-### What is synced
-
-The replica is one-way: local → remote. Files the container creates (build output, caches) stay remote and are never copied back. `.git` is never synced. Git's active ignore sources are translated into Mutagen ignore patterns: `core.excludesFile` (default `$XDG_CONFIG_HOME/git/ignore`), `.git/info/exclude`, and every `.gitignore` in non-ignored directories, with `core.ignoreCase` honoured. Tracked files that match an ignore rule are still synced. Ignored build output therefore does not travel; it is rebuilt in the container. On top of that:
-
-- `ignore` adds Mutagen patterns;
-- `include` re-includes paths git ignores but the container needs;
-- `containerFiles` targets are excluded from sync and uploaded separately, so a file can exist only on the remote side (for example a container-specific tool config).
-
-The ignore set is fixed when the Mutagen session is created. After changing ignore rules, terminate the session (see [Cleanup](#cleanup)) so the next preparation recreates it.
-
-## Requirements
-
-|Component|Notes|
-|---|---|
-|`omp`|Plugins are loaded from `~/.omp/plugins`. Developed against `@oh-my-pi/pi-coding-agent` 18.6.|
-|[`omp-unified-exec`](https://github.com/oh-my-omp/omp-unified-exec)|Installed as an omp plugin. The container tools reuse its current `ExecSession` API, rendered terminal observations and escape decoding, imported as `omp-unified-exec/src/*`, so the package must be installed under that name next to this plugin.|
-|A working PTY provider|The omp host must provide Bun's native `Bun.Terminal`. Before checking or opening a container terminal, `container_exec` calls `omp-unified-exec`'s runtime admission check. If the host lacks that capability, it reports `Container PTY unavailable` with the runtime requirement; the rest of the plugin still works.|
-|[Mutagen](https://mutagen.io)|`mutagen` CLI locally. Its daemon starts on demand. It reaches the build host over SSH and installs its agent there automatically.|
-|SSH|Non-interactive key-based access to the build host (`ssh -o BatchMode=yes <host> true` must succeed).|
-|[Komodo](https://komo.do) Core + Periphery|Core reachable from the local machine. The build host is registered as a Komodo **Server**, with Periphery running and a Docker daemon available. Developed against Komodo v2.2.|
-|`km` (komodo-cli)|Used for the container terminal (`km exec`). Its config file also supplies the Core URL and API credentials the plugin uses, so both paths share one source.|
-|`git`, Bun|`git` for worktree discovery and ignore translation. Bun comes with omp.|
-|Registry and AUR access from the build host|Image builds pull `docker:cli`, the images named in Dockerfiles, and `archlinux:latest`; the base image clones `paru` from the AUR and compiles it (the `paru-bin` binary links an older `libalpm` than current pacman ships).|
-
-**Komodo permissions.** The API key in the km profile must be able to read Servers, Deployments and Updates; inspect Docker images and containers and read container logs on the build host's Server; create and update Deployments; execute `Deploy`; and open container terminals on that Server.
-
-## Install
-
-```bash
-omp install https://github.com/oh-my-omp/omp-unified-exec#release   # dependency, once
-omp install https://github.com/oh-my-omp/omp-remote-build#release
-```
-
-Both installs track the `release` branch; re-run the same `omp install <url>` to update. Restart `omp` after installing or updating.
-
-Then create the two config files described below and restart `omp`.
-
-## Releases
-
-`main` is development integration and `release` is the distribution branch, so merging a pull request does not change the version. A pull request adds its entry under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md) instead: stage the change and run lgit (`git add`, then `uvx --from lgit-cli lgit`), which commits it with the entry.
-
-A daily run at 02:00 GMT+9 publishes `## [Unreleased]` as the next version; the bump follows the categories that hold entries. That run bumps `package.json`, commits `chore: release X.Y.Z` on `main`, tags `vX.Y.Z`, moves `release` to the same commit and creates the GitHub Release. An empty `## [Unreleased]` means no release that day; maintainers can also start a run from the Actions tab.
-
-## UI language
-
-Person-facing labels, statuses and notifications resolve their language each time they are generated:
-
-1. `OMOMP_LANG`, trimmed and case-insensitive, when it is `en` or `zh`; unsupported values are ignored.
-2. The first non-empty value of `LC_ALL`, `LC_MESSAGES` or `LANG`, after trimming: `zh` when it starts with `zh` (case-insensitive), otherwise `en`.
-3. English.
-
-Environment variables are read on every resolution. Text sent to the model does not use this language selection.
-
-Plugin-authored diagnostic details in notifications use the same language at notification time. Command output and other external error payloads remain unchanged; tool descriptions, reports and tool errors stay model-facing English.
-
-## Configuration
-
-### 1. Host config (per user): `~/.omp/agent/remote-build.json`
-
-The file lives in omp's agent directory: `~/.omp/agent` by default, or wherever omp's agent dir points for the active profile. It describes the single build host. It is read again on every check, so edits apply without restarting omp. An example is in [`examples/remote-build.host.json`](examples/remote-build.host.json):
-
-```json
-{
-  "ssh": "build-host",
-  "remoteRoot": "/srv/remote-build",
-  "komodo": {
-    "profile": "build",
-    "server": "build-host",
-    "cliConfig": "~/.config/komodo/komodo.cli.toml"
-  },
-  "bin": {
-    "km": "km",
-    "mutagen": "mutagen"
-  }
-}
-```
-
-|Field|Required|Default|Meaning|
-|---|---|---|---|
-|`ssh`|yes|—|SSH destination of the build host: an alias from `~/.ssh/config` or `user@host`. Used by `ssh` and as the Mutagen beta endpoint (`<ssh>:<remoteRoot>/<id>`).|
-|`remoteRoot`|yes|—|Absolute directory on the build host that holds one replica per environment. The Docker daemon managed by Periphery bind-mounts paths below it, so it must be a host path that daemon can access.|
-|`komodo.profile`|yes|—|`[[profile]]` `name` or one of its `aliases` in `komodo.cliConfig`.|
-|`komodo.server`|yes|—|Name of the Komodo Server (Periphery) that runs the containers.|
-|`komodo.cliConfig`|no|`~/.config/komodo/komodo.cli.toml`|km CLI config file. A leading `~/` is expanded. It must be a single file: km's directory, keyword and environment-variable config merging is not reproduced.|
-|`bin.km`|no|`km`|km executable. Bare names resolve through `PATH`. Use an absolute path if omp starts without your shell's `PATH`.|
-|`bin.mutagen`|no|`mutagen`|Mutagen executable, same resolution rules.|
-
-Unknown fields are rejected.
-
-The referenced km profile looks like this. The plugin reads `host`, `key` and `secret` and never prints them:
-
-```toml
-[[profile]]
-name = "build"
-host = "https://komodo.example.com"
-key = "K-..."
-secret = "S-..."
-```
-
-### 2. Project opt-in (per repository): `.omp/remote-build.json`
-
-Commit this at the repository root. Every worktree of the repository then carries it. An example is in [`examples/project.remote-build.json`](examples/project.remote-build.json):
-
-```json
-{
-  "image": "rust:1-bookworm",
-  "workdir": "/workspace",
-  "shell": "bash",
-  "ignore": ["*.log"],
-  "include": [".env.build"],
-  "containerFiles": {
-    ".cargo/config.toml": ".omp/container-cargo-config.toml"
-  },
-  "volumes": ["rb-cargo-registry:/usr/local/cargo/registry"],
-  "env": {
-    "CARGO_TARGET_DIR": "/workspace/target"
-  }
-}
-```
-
-|Field|Required|Default|Meaning|
-|---|---|---|---|
-|`image`|no|—|Ready container image of the build/test container. The container is deployed automatically when the environment is prepared, and `remote_env_init` redeploys it. Mutually exclusive with `dockerfile`.|
-|`dockerfile`|no|probe `.devcontainer/Dockerfile`, then `Dockerfile`|Repo-relative Dockerfile of the project image, built by `remote_env_init` with the worktree as context. Without `image`, `dockerfile` and a Dockerfile in the worktree, a subagent prepares the image and sets this field to `.omp/remote-build.Dockerfile` (see [Environment images](#environment-images)).|
-|`bootstrap`|no|none|One-line shell command run with `<shell> -c` in the working directory of a fresh container after every `remote_env_init` deployment, for example `bun install`. A prepared image sets it to the preparer's command.|
-|`workdir`|no|`/workspace`|Absolute path in the container where the replica is mounted; also the container's working directory.|
-|`shell`|no|`bash`|Program `container_exec` starts in the container and that runs `bootstrap`; it must exist in the image.|
-|`ignore`|no|`[]`|Extra Mutagen ignore patterns (Mutagen syntax, relative to the worktree root), applied after the translated git ignores.|
-|`include`|no|`[]`|Repo-relative paths that git ignores but that must still be synced.|
-|`containerFiles`|no|`{}`|Map of *remote target* → *local source*, both repo-relative. Each target is excluded from sync, and the source file's content is uploaded to the target on every preparation.|
-|`volumes`|no|`[]`|Extra `docker run -v` specs (`host-or-volume:container[:mode]`), typically named cache volumes shared across environments.|
-|`env`|no|`{}`|Extra container environment variables.|
-
-Relative paths must not be absolute or contain `..`; unknown fields are rejected. Values in `volumes` and `env` cannot contain CR, LF, NUL or the sequence ` #`, because of a limitation in Komodo's key/value parser.
-
-The container runs `sleep infinity` with restart policy `unless-stopped`. All work happens through the PTY tools.
-
-## Usage
-
-1. Start `omp` in an opted-in repository and run `/worktree <branch>` (or `/wt`). The plugin first checks SSH and Komodo; if either fails, the command is refused with an error and no worktree is created.
-2. omp creates the worktree and moves the session into it. The status line shows `remote-build: preparing <root>` until a `remote-build: ready rb-<id>` notification appears. Tool calls made in the meantime wait.
-3. Unless the config names an `image`, the agent calls `remote_env_init` before its first `container_exec`; `container_exec` on a container that is not running fails with a message pointing to it. After dependency changes it edits the Dockerfile (or calls `remote_env_init` with `rebuild: "prepare"` for a prepared one) and calls `remote_env_init` again. Commit the files a preparer run publishes.
-4. The agent edits locally as usual and uses the container tools to build and test:
-
-|Tool|Purpose|
-|---|---|
-|`remote_env_init`|Resolve the project image, recreate the worktree container from it and run the bootstrap command; returns the report described in [Environment images](#environment-images). `rebuild: "image"` rebuilds the image from the worktree Dockerfile; `rebuild: "prepare"` runs the preparer again.|
-|`container_exec`|Open a PTY running `shell` in the current worktree's container, with optional initial input (C-style escapes such as `\n`, `\x03`, `\x1b` are decoded; no newline is appended). Returns a `session_id` plus the output collected during `yield_time_ms` (default 10 s, range 0.25–30 s).|
-|`container_write_stdin`|Send input to, or poll (omit `chars`) an existing session. The yield window defaults to 250 ms.|
-|`container_list_sessions`|List this environment's PTY sessions, including ended ones whose final output has not been polled.|
-|`container_kill_session`|Terminate the local `km` client (SIGTERM, then SIGKILL after 2 s). This does not stop the container, and the remote shell may outlive it; prefer sending `exit\n`.|
-
-Each of the six tools exposes its detailed calling instructions at `xd://<tool>/usage`, linked from the tool's short `xd://<tool>` description. These topics cover session lifecycle and transport exit status, or initialization and preparer publication requirements.
-
-These tools, and the preparer's `remote_env_build_image`, are registered inactive, so no session has them in its base system prompt at startup. They are active in any directory of an opted-in project whose `.omp/remote-build.json` parses, main checkout included, so `/wt` and `/move` within a project keep the same tool set and prompt cache; called from the main checkout, they report that environments exist only in git worktrees. The active set is written at session start and session switch only, in canonical order (builtins in registry order, then every other name sorted), and the tools written there are the session's baseline. When a move (`/worktree`, `/wt`, `/move`, or an extension tool such as omp-config's `wt`) takes the session out of every opted-in project, the tools stay listed: before the next agent turn, or after the tool batch that moved the session, a hidden `<system-reminder source="omp-remote-build/tools">` message names the unavailable tools and why, and calls to them are refused with the same reason; moving back retracts the message. The system prompt and tool list therefore stay byte-identical, and so does the prompt cache. Only a session that started outside every opted-in project and then moves into one rewrites the active set once to add the tools. The preparer gets the container tools and `remote_env_build_image`; every other session gets the container tools and `remote_env_init`. Activation is done with `setActiveTools`, so the tools appear as top-level tools, not as `xd://` devices.
-
-`km exec` itself always exits 0, so the transport's exit code says nothing about your command. Read command results from the shell, for example `cargo test; echo $?`. While a session is running, each result shows the rendered terminal: lines that scrolled off since the previous call, then the current screen; `(screen unchanged since the last call)` when nothing changed. An ended session returns its immutable final active screen. Live updates read non-consuming screen snapshots after output has been parsed, throttled to one update per 250 ms with a trailing update while the call remains attached. Output is sanitized and truncated to omp's default tail limits; the full transcript is kept in the session's `log_path`. Sessions are scoped to the environment of the current cwd. Polling an ended session's final output or killing it releases its terminal before removing the session; omp shutdown terminates all remaining local transports and releases their live terminals.
-
-## Cleanup
-
-The plugin creates resources but never deletes them, so removing a worktree leaves its environment behind. To remove one:
-
-```bash
-mutagen sync list --label-selector=remote-build      # find rb-<id>
-mutagen sync terminate rb-<id>
-# Komodo: delete the Deployments rb-<id>, rb-boot-<id> and rb-build-<id> (UI or API), which removes their containers
-# containers run as root, so files they create in the replica (bootstrap output such as node_modules) are root-owned:
-ssh <host> docker run --rm -v <remoteRoot>:/rb archlinux:latest rm -rf /rb/<id>
-```
-
-Project images need no cleanup: once no container uses them, the build host's image prune removes them, and the next `remote_env_init` rebuilds from the repository's Dockerfile. The same holds for the base image `rb-base-archlinux:latest`. `<remoteRoot>/base/archlinux` holds its build context and `<remoteRoot>/prepare/<id>` a preparer run's scratch context; both are rewritten by the next run that needs them.
-
-Named volumes listed in `volumes` are shared between environments and are not tied to any single one.
-
-## Security notes
-
-- Credentials come only from the km CLI config file you point at. Parse errors are reported without echoing file content, and Komodo error bodies are discarded rather than shown, because they can echo environment values.
-- The Deployment is created with `skip_secret_interp: true`, so Komodo does not interpolate its secret variables into the container config.
-- `env` values end up in the Komodo Deployment config in plain text. Do not put secrets there.
-
-## Limitations
-
-- One build host per user config; per-project host selection is not supported.
-- The replica is one-way. Remote changes (generated files, formatter output run in the container, files created by `bootstrap`) are not synced back.
-- The flush after every non-read tool call adds a sync round-trip to each such call.
-- The Mutagen ignore set is fixed at session creation.
-- No automatic teardown (see [Cleanup](#cleanup)).
-- `container_*` tools need an omp host that provides native `Bun.Terminal`.
-- Every `remote_env_init` recreates the container, which ends open container sessions and discards anything written in the container outside the mount.
-- Images are keyed by Dockerfile content only. A Dockerfile that `COPY`s changing build-context files, or whose `RUN` steps fetch moving upstream packages, needs `rebuild: "image"` to pick those changes up.
-- Image pruning on the build host can remove a project image between sessions; the next `remote_env_init` rebuilds it, which takes a build's time. The base image is rebuilt the same way, so a change to [`images/archlinux.Dockerfile`](images/archlinux.Dockerfile) reaches the build host once the old image is pruned or removed.
-- A prepared Dockerfile reaches other worktrees only through git: worktrees checked out without the published files run the preparer again.
-
-## Development
-
-```bash
-bun install
-bunx tsc --noEmit -p .
-bun test
-```
-
-The `omp-unified-exec` dev dependency provides the API used for type-checking and for loading this checkout with `omp -e src/index.ts`. Run `bun update omp-unified-exec` when that API moves. At runtime an installed plugin uses the copy installed as an omp plugin. When checking against a local unified-exec checkout, temporarily resolve the dev dependency to that checkout, run the type-check, and restore the dependency resolution without committing it.
-
-`src/komodo.ts` is the only container-backend boundary: `komodoReachable`, `ensureContainer`, `runOnce`, `buildImage`, `imageExists`, `containerRunning` and `execArgv`. No other module builds Komodo requests or `km` argv.
-
-## License
-
-MIT
+- **Tool registration and availability**
+  - Plugin tool set — Does: registers six agent tools (`container_exec`, `container_write_stdin`, `container_list_sessions`, `container_kill_session`, `remote_env_init`, `remote_env_build_image`), all `defaultInactive: true` with a `usage` `docTopics()` topic each. When: at plugin load (`omp.extensions: ["./src/index.ts"]` in `package.json`). Example: `pi.registerTool(execTool)` in `src/container-tools.ts`, `pi.registerTool(initTool)`/`pi.registerTool(buildTool)` in `src/init.ts`.
+  - Baseline active-set write — Does: computes which plugin tools apply to the session's cwd and writes them into the active tool set in canonical order so the system/tools prompt prefix stays cache-stable, making that set the lifecycle baseline. When: `session_start` (forced write) and `session_switch`. Example: `applyActiveTools(pi, [...current.filter((name) => !(name in PLUGIN_TOOLS)), ...own])` in `startLifecycle`.
+  - Per-directory availability — Does: grants the four `container_*` tools plus `remote_env_build_image` for the `remote-env-preparer` agent or `remote_env_init` for every other agent, only inside an opted-in project (a worktree root with a valid `.omp/remote-build.json`); an invalid config or a cwd outside every project means none. When: evaluated at every `before_agent_start` and at `tool_result` batches after the cwd moved. Example: `availabilityFor` returns `[...CONTAINER_TOOLS, ctx.agent.name === PREPARER_AGENT_NAME ? "remote_env_build_image" : "remote_env_init"]`.
+  - `tools` reminder delta — Does: injects or retracts a hidden delta telling the model which baseline tools are currently unavailable and why, so the active set never has to be rewritten mid-lifecycle when a move changes what applies. When: `before_agent_start` (`atPrompt`) and `tool_result` `additionalContext` after a move (`afterTools`), with the turn boundary tracked on `turn_start` (`deltas.turnStarted()`). Example: `<system-reminder source="omp-remote-build/tools">` containing `These remote-build tools are listed but unavailable: remote_env_init. Reason: the current directory … is not inside a project whose worktree root has a valid .omp/remote-build.json.`
+  - `tool_call` availability refusal — Does: refuses calls to baseline tools the current cwd does not qualify for, with the same reason the delta gave. When: `tool_call`, before the tool runs. Example: `{ block: true, reason: unavailableBody([event.toolName], availability) }`.
+  - `xd://<tool>/usage` topics — Does: serves each tool's detailed calling instructions on demand through `docTopics()`, read from `src/topics/<tool>/usage.md`. When: when the model reads `xd://<tool>/usage`. Example: every tool description ends with `` `xd://container_exec/usage` — before opening a container terminal or interpreting its exit status ``.
+- **Environment lifecycle**
+  - `/worktree` build-host gate — Does: before `/worktree` or `/wt` typed inside an opted-in project creates the worktree, verifies the build host answers `ssh -o BatchMode=yes` and Komodo Core answers `ListServers`, refusing the command on failure so no worktree is created. When: `input` event matching `/^\/(?:wt|worktree|move)(?:\s|$)/`, with the pre-check applying only to `/worktree`/`/wt`. Example: refusal notification `remote-build: build host check failed, worktree not created: <reason>` and `{ handled: true }`.
+  - Post-move environment prep — Does: once the session cwd moves to the new worktree, starts preparing its environment with a `remote-build` status line while it runs and a notification at the end. When: asynchronously after the same `input` hook, only for `/worktree`/`/wt` from an opted-in project, with `waitForMove` polling `sessionManager.getCwd()` for up to 10 minutes. Example: `remote-build: ready rb-<id> <- <worktree root>` (info) or `remote-build: environment failed for <root>: <reason>` (error).
+  - `session_start` prep — Does: begins environment preparation in the background for an isolated subagent's own workspace or a non-main-checkout worktree that already has an `rb-env=<id>` Mutagen session (a reopened or resumed session). When: `session_start`, after the active-set write. Example: `ctx.agent.kind === "sub" && isIsolatedSubagent(ctx)` → `begin(project.root, project.config)`.
+  - On-demand `ensureEnv` prep — Does: prepares the environment on demand the first time `remote_env_init` or a `container_*` tool is called in an opted-in worktree with no environment state, refusing calls from the main checkout. When: inside every tool's `execute`. Example: error `remote-build environments exist only in git worktrees; <root> is the main checkout`.
+  - `prepareEnv` bring-up — Does: idempotently checks the host, finds or creates the Mutagen session labelled `rb-env=<id>`, flushes it, uploads each `containerFiles` entry to the remote replica over ssh, and — only for a configured `image` — ensures the `rb-<id>` Deployment runs it. When: invoked by every preparation trigger. Example: `PreparedEnv { id, root, remotePath: "<remoteRoot>/<id>", mutagenSession, container: "rb-<id>", config, host }`.
+  - Env-state gating — Does: gates every tool call in a worktree by its `preparing`/`ready`/`failed` environment state, waiting on the `preparing` promise without an added timeout and blocking all calls with the error once `failed`. When: `tool_call`. Example: `{ block: true, reason: "remote-build environment failed: <error>" }`.
+  - Implicit Mutagen flush — Does: runs `mutagen sync flush` after the result of any tool not on the read-only list when the worktree's environment is ready, so local writes (including write tools owned by other extensions) reach the remote replica before the agent's next step. When: `tool_result`. Example: `NON_WRITING_TOOLS` = `read`, `grep`, `glob`, `ast_grep`, `web_search`, `todo`, `ask`, `ctx`, `wait`, the four `container_*` tools and `remote_env_build_image`; everything else flushes.
+  - Shutdown PTY teardown — Does: SIGKILLs every container PTY this plugin instance owns and releases its terminal, immediately rather than gracefully because shutdown handlers are aborted after 2 s. When: `session_shutdown`. Example: `terminateSession(session, "immediate")` for each entry of the `SessionStore`, then `session.releaseForShutdown()`.
+  - Status and notifications — Does: reports environment progress in the `remote-build` status line and raises notifications for ready, failure and tool-update errors, in the resolved UI language. When: during input-hook preparation and each `remote_env_init` phase. Example: status `remote-build: init deploy and bootstrap` / `remote-build：初始化部署并运行 bootstrap`; notification `remote-build: updating tools failed: <reason>`.
+- **Environment tools**
+  - `remote_env_init` — Does: resolves the project image, builds it when its tag is missing, recreates the `rb-<id>` container from it (ending open container sessions), runs `bootstrap`, and returns a `key: value` report. When: the model calls it before the first `container_exec` or after dependency changes; `rebuild: "image"` rebuilds even when the tag is cached, `rebuild: "prepare"` re-runs the preparer (refused for a configured `image` or a hand-written Dockerfile). Example: report keys `status`, `worktree`, `project`, `container`, `image`, `image_source`, `persisted`, `base_image`, `note`, `build_output_tail`, `bootstrap`, `bootstrap_exit_code`, `bootstrap_output_tail`, `preparer_report`, `usage`, plus `error` on failure; topic `` `xd://remote_env_init/usage` ``.
+  - `liveEnv` config re-read — Does: re-reads `.omp/remote-build.json` on every init call and applies only `image`/`dockerfile`/`bootstrap`, keeping every other field at the value the environment was prepared with. When: `remote_env_init` and `remote_env_build_image`. Example: `liveEnv` returns `{ ...env, config: { ...env.config, imageSource: config.imageSource, bootstrap: config.bootstrap } }`.
+  - Stale-report `note` — Does: appends the published `.omp/remote-build.preparer.md` to the report and adds a `note` when its `dockerfile_sha256` no longer matches the current Dockerfile. When: `remote_env_init` for a dockerfile-sourced image. Example: `note: .omp/remote-build.preparer.md was written for an earlier version of .omp/remote-build.Dockerfile; its claims may be stale`.
+  - `remote_env_build_image` — Does: validates a candidate Dockerfile (final stage must be `FROM rb-base-archlinux:latest`, no `COPY`/`ADD`, `bootstrap` a single line), builds `rb-project-<project-id>:<hash>` from an empty context at `<remoteRoot>/prepare/<id>/build`, recreates the container, runs the bootstrap, and stashes the candidate for publication. When: only the `remote-env-preparer` agent may call it, and it is refused when the config names `image` or a hand-written `dockerfile`. Example: error `remote_env_build_image is only available to the remote-env-preparer agent; call remote_env_init`; topic `` `xd://remote_env_build_image/usage` ``.
+  - `bootstrap` run — Does: runs `<shell> -c <bootstrap>` once in a fresh `rb-boot-<id>` container with the environment's mounts and env. When: after every container redeploy inside `remote_env_init` and `remote_env_build_image`, up to 30 minutes. Example: `runOnce(env.host, { ...spec, name: "rb-boot-<id>" }, { entrypoint: null, argv: [env.config.shell, "-c", bootstrap] }, { timeoutMs: BOOTSTRAP_TIMEOUT_MS })`.
+- **Container PTY tools**
+  - `container_exec` — Does: opens an interactive PTY (omp-unified-exec `ExecSession`, 120×30) that `km exec`s into this environment's container, sends optional C-escape-decoded `input`, and returns `session_id` plus the rendered screen collected within `yield_time_ms` (250–30000, default 10000). When: the model calls it once the environment's container is running. Example: error `Container rb-<id> is not running. Call remote_env_init to prepare this worktree's environment.`; topic `` `xd://container_exec/usage` ``.
+  - `container_write_stdin` — Does: sends characters to a container PTY — or polls it when `chars` is omitted — and returns output within `yield_time_ms` (default 250). When: the model calls it with a `session_id` from `container_exec`. Example: `chars` decodes `\n`, `\r`, `\t`, `\xHH`, `\uHHHH`, `\u{H…}`, `\e`, `\0`, `\\`; unknown escapes are preserved; topic `xd://container_write_stdin/usage`.
+  - `container_list_sessions` — Does: lists this environment's PTY sessions, including ended ones whose final output was never polled, with transport status, command, cwd, log path and failure message. When: the model calls it. Example: `{"session_id": 1, "transport": {"status": "exited", "km_exit_code": 0, "signal": null}, "command": …, "log_path": …}`; topic `` `xd://container_list_sessions/usage` ``.
+  - `container_kill_session` — Does: ends a session's local `km` client with SIGTERM then SIGKILL after 2 s, returning its final screen and removing it from the store. When: the model calls it with `session_id`. Example: `terminateSession(session, "graceful")`; error `Container session <id> km client is still running after SIGKILL…`; topic `` `xd://container_kill_session/usage` ``.
+  - PTY session store — Does: caps PTY sessions at `maxSessions: 64` (`lruProtectedCount: 8`) and binds each session to its environment root, so a `session_id` from another worktree is rejected. When: every `container_*` call. Example: error `Unknown container session <id> in environment <root>.`
+  - PTY result rendering — Does: reports the rendered screen — `(screen unchanged since the last call)` or `(no output)` — sanitized and truncated to the host's `DEFAULT_MAX_LINES`/`DEFAULT_MAX_BYTES`, with the full transcript kept at `log_path`, a `history` note when scrolled-off lines were evicted, and live snapshots streamed to `onUpdate` at most once per 250 ms. When: every collected `container_*` call. Example: `[Output truncated to the last <DEFAULT_MAX_LINES> lines / <DEFAULT_MAX_BYTES> bytes. Full output: <log_path>]`.
+  - `km` exit note — Does: the transport's exit status is the local `km` client's, never the command's, so every result carries a note telling the model to read exit codes from the shell instead. When: appended to every `container_exec`/`container_write_stdin`/`container_list_sessions` result. Example: `note: km always exits 0; this is only the local transport's exit code. Read command exit codes from the container shell output, e.g. echo $? immediately after the command.`
+  - `requireBunRuntime` check — Does: refuses to open a PTY when the host cannot provide Bun's native `Bun.Terminal`, via omp-unified-exec's `requireBunRuntime`. When: `container_exec`, before spawning. Example: `Container PTY unavailable: <reason>`.
+- **File sync**
+  - `rb-<id>` Mutagen session — Does: mirrors the worktree one-way (local → remote) with `mutagen sync create`, treats the Mutagen daemon as the authority on session existence, and reuses the session found by label on re-preparation, with a duplicate label an error. When: inside `prepareEnv`. Example: `mutagen sync create --name=rb-<id> --label=remote-build --label=rb-env=<id> --mode=one-way-replica --ignore-vcs <root> <ssh>:<remoteRoot>/<id>`; lookup by `--label-selector=rb-env=<id>`.
+  - Git-ignore translation — Does: translates git's active ignore sources into Mutagen patterns, re-including ignored ancestors of tracked paths and `include` entries, keeping ignored-but-tracked files synced, then appends config `ignore`, `containerFiles` target exclusions and `/.git`. When: at Mutagen session creation (`deriveIgnoreRules`); the set is fixed for the session's lifetime. Example: sources are `core.excludesFile` (default `$XDG_CONFIG_HOME/git/ignore`, else `~/.config/git/ignore`), `.git/info/exclude` and every `.gitignore` in non-ignored directories honoring `core.ignorecase`; ignored tracked paths come from `git ls-files --cached -i -z --exclude-standard`.
+- **Project image**
+  - Image-source resolution — Does: resolves the project image to a configured `image` used as-is, a repo-relative `dockerfile`, or detection probing `.devcontainer/Dockerfile` then `Dockerfile`, falling through to the preparer when nothing resolves. When: every `remote_env_init` call (`planImage`/`resolveDockerfile`). Example: `DOCKERFILE_CANDIDATES = [".devcontainer/Dockerfile", "Dockerfile"]`.
+  - Content-keyed image tag — Does: tags project images `rb-project-<project-id>:<first 16 hex of the Dockerfile's sha256>` so an existing tag proves it is a build of exactly that Dockerfile and is reused, while different Dockerfiles get separate tags. When: in `remote_env_init` and `remote_env_build_image`. Example: `projectImage(pid, sha256(dockerfile))`.
+  - `docker:cli` image build — Does: builds images on the build host with a one-shot `docker:cli` Deployment `rb-build-<id>` that mounts the host Docker socket and the build context (the synced replica for worktree Dockerfiles, the empty `prepare/` scratch dir for candidates) and runs `docker build` there. When: when the tag is absent or `rebuild: "image"` is requested, up to 60 minutes. Example: `argv: ["build", "--progress=plain", "--tag", spec.image, "--file", "/ctx/Dockerfile", "/ctx"]`.
+  - `rb-base-archlinux` base image — Does: builds `rb-base-archlinux:latest` (Arch Linux with `base-devel`, `git`, `sudo`, `paru`) on the build host from the shipped `images/archlinux.Dockerfile` whenever a Dockerfile stage is `FROM` it and the image is absent. When: inside `buildProjectImage`/`ensureBaseImage`, with its context uploaded to `<remoteRoot>/base/archlinux`. Example: `stageBases(text).includes(BASE_IMAGE)` triggers `ensureBaseImage(host, env, signal)`.
+- **Preparer subagent**
+  - `remote-env-preparer` subagent — Does: runs a bundled preparer subagent in the worktree with the session's model, tools `read`, `grep`, `glob`, `web_search` and this plugin's own `src/index.ts` preloaded so it alone gets `remote_env_build_image`, with its `yield` validated against a strict output schema. When: `remote_env_init` with `rebuild: "prepare"` or when no Dockerfile resolves. Example: `pi.pi.runSubprocess({ ..., outputSchema: PREPARER_OUTPUT_SCHEMA, outputSchemaMode: "strict", preloadedExtensionPaths: [fileURLToPath(new URL("./index.ts", import.meta.url))] })`, id `rb-prep-<id>-<time>`.
+  - `PREPARER_PROMPT` rules — Does: instructs the preparer to produce an image holding toolchain and dependencies but no project code — final stage `FROM rb-base-archlinux:latest`, `pacman` for official packages, `paru` `-bin` variants for AUR, no `COPY`/`ADD`, a single-line idempotent bootstrap — and to report `result: success` only after build and tests exit 0 in the final container. When: as the subprocess's `systemPrompt`/`assignment`. Example: ``The final stage of your Dockerfile must start with `FROM rb-base-archlinux:latest` ``; report fields `result`, `toolchain`, `packages`, `bootstrap`, `verified`, `how_to`, `caveats`.
+  - Preparer publish — Does: on `result: success` only, publishes the last successful candidate from `<remoteRoot>/prepare/<id>/` into the worktree — `.omp/remote-build.Dockerfile`, `.omp/remote-build.preparer.md` headed by `<!-- dockerfile_sha256: <hex> -->`, and `.omp/remote-build.json` rewritten with `dockerfile`+`bootstrap` — each by atomic rename with the config written last, then removes the scratch dir. When: after the preparer finishes inside `remote_env_init`. Example: report field `persisted: .omp/remote-build.Dockerfile, .omp/remote-build.preparer.md, and dockerfile/bootstrap in .omp/remote-build.json; commit them so other worktrees and build hosts reuse this definition`.
+- **Komodo backend**
+  - Credential loading — Does: reads the Komodo Core URL and API `key`/`secret` from the `[[profile]]` (matched by `name` or `aliases`) in `komodo.cliConfig`, re-read on every call so credential rotation applies, and never echoes TOML parse content or error bodies that could contain values. When: `loadEndpoint()` before every Core request; `checkHost` proves reachability with `ListServers`. Example: `ssh -o BatchMode=yes -o ConnectTimeout=5 <host> true` then `komodoReachable(host)`.
+  - `rb-<id>` Deployment — Does: keeps the Deployment's managed fields converged (image, `command: sleep infinity`, volumes headed by `<remotePath>:<workdir>`, environment, `--workdir`, `restart: unless-stopped`, `skip_secret_interp: true`), creating or updating it, `Deploy`ing and waiting for the Update and `running` state, with `ensure` skipping a deploy when unchanged and running while `redeploy` always recreates. When: `prepareEnv` (configured image) and every `remote_env_init`/`remote_env_build_image` redeploy. Example: `upsertDeployment` + `deploy` polling `GetUpdate` for up to 10 min, then `waitRunning` for up to 60 s.
+  - `runOnce` one-shots — Does: runs one-shot work in `rb-boot-<id>` and `rb-build-<id>` Deployments (`restart: no`), waiting for the container to exit — inspecting it directly when Core reports `unknown` — then reading `State.ExitCode` and the last 300 log lines. When: bootstrap runs and image builds via `runOnce`. Example: `requestOrAbsent(..., /No such container/)` and `GetContainerLog { tail: 300, timestamps: false }`.
+  - `imageExists`/`containerRunning` probes — Does: probes Docker state through `InspectDockerImage` (absent on `No such image`) and the Deployment's cached state, treating `paused`/`restarting`/`stopping`/`removing` as running and inspecting the container itself when the state is `unknown`. When: image-cache checks in `remote_env_init` and the `container_exec` pre-check. Example: `imageExists(host, "rb-project-<id>:<hash>")`.
+  - `km exec` transport — Does: builds the container PTY's transport argv from the local km CLI pointed at the same profile, so the interactive shell and the API share one credential source. When: every `container_exec` spawn. Example: `[bin.km, "-c", cliConfig, "-p", profile, "exec", "--server", server, container, shell]`.
+- **Configuration and environment**
+  - `.omp/remote-build.json` — Does: opts the whole repository in from a worktree root with fields `image`/`dockerfile` (mutually exclusive), `bootstrap` (single line), `workdir` (absolute, default `/workspace`), `shell` (default `bash`), `ignore`, `include`, `containerFiles`, `volumes`, `env`, rejecting unknown fields, absolute relative paths and `..` segments. When: parsed at every availability check and re-read by `remote_env_init`. Example: `examples/project.remote-build.json`.
+  - `<agentDir>/remote-build.json` — Does: names the one build host — `ssh`, `remoteRoot` (host-absolute), `komodo.profile`, `komodo.server`, `komodo.cliConfig` (default `~/.config/komodo/komodo.cli.toml`, `~/` expanded) and optional `bin.km`/`bin.mutagen` — re-read on every use so edits apply without restarting omp. When: `loadHost()` inside every host check, preparation and Komodo call. Example: `examples/remote-build.host.json`.
+  - i18n env vars — Does: resolves the language for person-facing statuses, notifications and tool labels from `OMOMP_LANG` (`en`/`zh`), else the first non-empty of `LC_ALL`/`LC_MESSAGES`/`LANG` (leading `zh` → Chinese), else English, re-read at each text generation. When: whenever a notification, status or label is produced (`tr()`). Example: `tr("remote-build: preparing ", "remote-build：正在准备 ")`.
+  - `GIT_*` env fallback — Does: makes worktree discovery give up its filesystem `.git` walk and defer to `git rev-parse --show-toplevel` whenever `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CEILING_DIRECTORIES` or `GIT_COMMON_DIR` is set, because git then looks somewhere the walk cannot know. When: on every `projectConfig`/`worktreeRootByFs` call. Example: `if (process.env.GIT_DIR !== undefined || …) return null;`
+  - `XDG_CONFIG_HOME` — Does: supplies the default location of the global git ignore file during rule derivation. When: `deriveIgnoreRules` when `core.excludesFile` is unset. Example: `join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "git", "ignore")`.
+- **Packaging and repository**
+  - `package.json` wiring — Does: wires the plugin into omp and the release channel with `omp.extensions` pointing at `./src/index.ts`, `omomp.changelog` declaring `CHANGELOG.md`, `files` shipping `src`, `omomp-shared`, `images`, `examples` and both READMEs, and `peerDependencies` marking `omp-unified-exec` `"*"` optional. When: at plugin install/load. Example: `"omp": { "extensions": ["./src/index.ts"] }`.
+  - `omomp-shared` vendored helpers — Does: supplies the canonical active-set write, the `<system-reminder>` delta stream and environment-based language resolution shared with other omomp plugins. When: imported at plugin load. Example: `import { createDeltaStream, type Delta } from "../omomp-shared/context-delta.ts"` with `createDeltaStream("omp-remote-build/tools")`.
+  - `omp-unified-exec` dependency — Does: runs the container PTY layer on the installed plugin's `ExecSession`, `SessionStore`, output sanitization, char unescaping and `requireBunRuntime`. When: imported as `omp-unified-exec/src/*` at module load of `src/container-tools.ts`. Example: `import { ExecSession } from "omp-unified-exec/src/session.ts"` and `import { requireBunRuntime } from "omp-unified-exec/src/pty.ts"`.
+  - `accept/` drivers — Does: three Bun acceptance drivers measure ignore-rule derivation, the ssh/mutagen transport and `containerFiles` upload under a 64 MiB load against stub `ssh`/`mutagen`/Komodo binaries, reporting peak-heap deltas. When: run manually, never at runtime. Example: `bun --expose-gc accept/driver.ts <repo-root> [--pattern-out <file>] [--label <s>]`, `bun --expose-gc accept/transport.ts <row1|row2|row3> --src <plugin src dir>`.
