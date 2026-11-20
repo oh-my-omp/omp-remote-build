@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the shared copy of `context-delta.ts` to oh-my-omp/shared@80068ad.
+
 ## [0.1.25] - 2026-11-19
 
 ### Changed
