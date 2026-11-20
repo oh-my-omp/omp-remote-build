@@ -2,7 +2,18 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync as mkdir, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ReadonlySessionManager, SessionEntry } from "@oh-my-pi/pi-coding-agent";
+import type {
+	ExtensionAgentIdentity,
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionHandler,
+	ExtensionUIContext,
+	ReadonlySessionManager,
+	SessionEntry,
+	SessionManager,
+	SourceInfo,
+	ToolInfo,
+} from "@oh-my-pi/pi-coding-agent";
 
 const EXPECT_LIGHT = process.env.EXPECT_LIGHT !== "0";
 const ROOT = process.argv[2];
@@ -80,11 +91,13 @@ function writeConfig(at: string): void {
 	writeFileSync(join(at, CONFIG_PATH), JSON.stringify(PROJECT_CONFIG));
 }
 
+type HostToolRef = Pick<ToolInfo, "name"> & { sourceInfo: Pick<SourceInfo, "source"> };
+
 interface Registered {
-	readonly handlers: Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>;
+	readonly handlers: Map<string, ExtensionHandler<unknown, unknown>>;
 	readonly tools: string[];
 	active: string[];
-	allTools: () => { name: string; sourceInfo: { source: string } }[];
+	allTools: () => HostToolRef[];
 }
 
 function makePi(): Registered {
@@ -182,15 +195,25 @@ function makeCtx(opts: { cwd: string; tree?: TreeSpec; subagent?: boolean; moveT
 			return childrenOf(null).map((entry) => ({ entry, children: [] }));
 		},
 		getHeader: () => null,
-	} as unknown as ReadonlySessionManager;
+	} satisfies Pick<
+		SessionManager,
+		"getCwd" | "getEntries" | "getEntry" | "getChildren" | "getLeafEntry" | "getBranch" | "getTree" | "getHeader"
+	>;
+	const ui = {
+		notify: (message: string, level: string) => notifications.push({ message, level }),
+		setStatus: () => {},
+	} satisfies Partial<ExtensionUIContext>;
+	const agent = {
+		id: "test-agent",
+		name: "test-agent",
+		kind: opts.subagent ? "sub" : "main",
+		depth: opts.subagent ? 1 : 0,
+	} satisfies ExtensionAgentIdentity;
 	const context = {
 		cwd: opts.cwd,
-		sessionManager,
-		agent: { name: "test-agent", kind: opts.subagent ? "sub" : "main", depth: opts.subagent ? 1 : 0 },
-		ui: {
-			notify: (message: string, level: string) => notifications.push({ message, level }),
-			setStatus: () => {},
-		},
+		sessionManager: sessionManager as ReadonlySessionManager,
+		agent,
+		ui,
 	} as unknown as ExtensionContext;
 	return { ctx: context, counts, notifications, movedSeen };
 }
@@ -241,7 +264,7 @@ async function observed(what: string, condition: () => boolean): Promise<boolean
 }
 
 const expectedFull = [...CONTAINER, "remote_env_init"];
-const canonical = (names: string[], all: { name: string; sourceInfo: { source: string } }[]): string => {
+const canonical = (names: string[], all: HostToolRef[]): string => {
 	const requested = new Set(names);
 	const builtins = [
 		...new Set(all.filter((tool) => tool.sourceInfo.source === "builtin" && requested.has(tool.name)).map((tool) => tool.name)),
