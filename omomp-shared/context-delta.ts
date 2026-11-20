@@ -1,16 +1,19 @@
 import { getAnthropicCompactionPayload } from "@oh-my-pi/pi-agent-core";
-import type { CompactionEntry, ExtensionContext, SessionEntry } from "@oh-my-pi/pi-coding-agent";
+import type { BeforeAgentStartEventResult, CompactionEntry, ExtensionContext, SessionEntry } from "@oh-my-pi/pi-coding-agent";
 import { resolveSessionLeafId } from "@oh-my-pi/pi-coding-agent";
 import { getOpenAiRemoteCompactionPayload } from "@oh-my-pi/pi-coding-agent/session/session-context";
 
 export type Delta = { readonly kind: "none" } | { readonly kind: "text"; readonly body: string };
 
-interface DeltaMessage {
-	readonly customType: string;
-	readonly content: string;
-	readonly display: false;
-	readonly attribution: "agent";
-}
+type HostMessage = Exclude<NonNullable<BeforeAgentStartEventResult["message"]>, string>;
+
+type DeltaMessage = Required<Pick<HostMessage, "customType" | "display" | "attribution">> & {
+	readonly content: Extract<HostMessage["content"], string>;
+};
+
+type CarrierContent =
+	| Extract<Extract<SessionEntry, { type: "message" }>["message"], { role: "custom" | "developer" }>["content"]
+	| Extract<SessionEntry, { type: "custom_message" }>["content"];
 
 export interface DeltaStream {
 	atPrompt(ctx: ExtensionContext, delta: Delta): { message: DeltaMessage } | undefined;
@@ -50,17 +53,13 @@ function lastBlock(source: string, text: string): Effective | undefined {
 	return { kind: "text", body: inner.startsWith(supersede) ? inner.slice(supersede.length) : inner };
 }
 
-function lastBlockInContent(source: string, content: unknown): Effective | undefined {
+function lastBlockInContent(source: string, content: CarrierContent): Effective | undefined {
 	if (typeof content === "string") return lastBlock(source, content);
-	if (!Array.isArray(content)) return undefined;
 	const open = openTag(source);
 	const openSansNewline = open.slice(0, -1);
 	const texts: string[] = [];
 	for (const block of content) {
-		if (typeof block !== "object" || block === null) continue;
-		if (!("type" in block) || block.type !== "text") continue;
-		if (!("text" in block) || typeof block.text !== "string") continue;
-		texts.push(block.text);
+		if (block.type === "text") texts.push(block.text);
 	}
 	for (const [index, text] of texts.entries()) {
 		if (text.includes(open) || (index < texts.length - 1 && text.endsWith(openSansNewline))) {
@@ -84,7 +83,6 @@ function carrierBlock(entry: SessionEntry, source: string): Effective | undefine
 	}
 	if (entry.type === "custom_message") {
 		if (entry.customType !== source) return undefined;
-		if (typeof entry.content !== "string" && !Array.isArray(entry.content)) return undefined;
 		return lastBlockInContent(source, entry.content);
 	}
 	return undefined;
