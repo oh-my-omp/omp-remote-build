@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionAPI, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail, z } from "@oh-my-pi/pi-coding-agent";
 import type { CollectResult } from "omp-unified-exec/src/collect.ts";
@@ -10,6 +9,7 @@ import { SessionStore } from "omp-unified-exec/src/session-store.ts";
 import { unescapeChars } from "omp-unified-exec/src/unescape.ts";
 import { tr } from "../omomp-shared/i18n.ts";
 import { containerRunning, execArgv } from "./komodo.ts";
+import { TOOL_DESCRIPTIONS, usageTopics } from "./tool-docs.ts";
 import type { PreparedEnv } from "./types.ts";
 
 const EXIT_NOTE =
@@ -226,9 +226,8 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 		name: "container_exec",
 		defaultInactive: true,
 		label: tr("Container exec", "容器执行"),
-		description:
-			"Open an interactive PTY in the current remote-build container through Komodo.\n\nTopics — read the one a call needs before making it:\n- `xd://container_exec/usage` — before opening a container terminal or interpreting its exit status",
-		docTopics: () => ({ usage: readFileSync(new URL("./topics/container_exec/usage.md", import.meta.url), "utf8") }),
+		description: TOOL_DESCRIPTIONS.container_exec,
+		docTopics: () => usageTopics("container_exec"),
 		parameters: execSchema,
 		async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
 			const params = execSchema.parse(rawParams);
@@ -263,9 +262,8 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 		name: "container_write_stdin",
 		defaultInactive: true,
 		label: tr("Container stdin", "容器标准输入"),
-		description:
-			"Send characters to a container PTY and/or poll for output.\n\nTopics — read the one a call needs before making it:\n- `xd://container_write_stdin/usage` — before sending input, polling output, or interpreting exit status",
-		docTopics: () => ({ usage: readFileSync(new URL("./topics/container_write_stdin/usage.md", import.meta.url), "utf8") }),
+		description: TOOL_DESCRIPTIONS.container_write_stdin,
+		docTopics: () => usageTopics("container_write_stdin"),
 		parameters: writeSchema,
 		async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
 			const params = writeSchema.parse(rawParams);
@@ -281,9 +279,8 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 		name: "container_list_sessions",
 		defaultInactive: true,
 		label: tr("Container sessions", "容器会话"),
-		description:
-			"List container PTY sessions for the current remote-build environment.\n\nTopics — read the one a call needs before making it:\n- `xd://container_list_sessions/usage` — before listing sessions or interpreting ended sessions and transport status",
-		docTopics: () => ({ usage: readFileSync(new URL("./topics/container_list_sessions/usage.md", import.meta.url), "utf8") }),
+		description: TOOL_DESCRIPTIONS.container_list_sessions,
+		docTopics: () => usageTopics("container_list_sessions"),
 		parameters: listSchema,
 		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
 			listSchema.parse(rawParams);
@@ -312,9 +309,8 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 		name: "container_kill_session",
 		defaultInactive: true,
 		label: tr("Kill container session", "终止容器会话"),
-		description:
-			"Terminate the local km PTY client for a container session.\n\nTopics — read the one a call needs before making it:\n- `xd://container_kill_session/usage` — before terminating a client or choosing how to end its remote shell",
-		docTopics: () => ({ usage: readFileSync(new URL("./topics/container_kill_session/usage.md", import.meta.url), "utf8") }),
+		description: TOOL_DESCRIPTIONS.container_kill_session,
+		docTopics: () => usageTopics("container_kill_session"),
 		parameters: killSchema,
 		async execute(_toolCallId, rawParams, _signal, onUpdate, ctx) {
 			const params = killSchema.parse(rawParams);

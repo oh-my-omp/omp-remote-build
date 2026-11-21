@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { z } from "@oh-my-pi/pi-coding-agent";
 import { tr } from "../omomp-shared/i18n.ts";
@@ -19,6 +18,7 @@ import {
 	stageBases,
 } from "./project.ts";
 import { readRemoteFile, removeRemoteDir, writeRemoteFile } from "./remote-files.ts";
+import { TOOL_DESCRIPTIONS, usageTopics } from "./tool-docs.ts";
 import type { DockerfileRef, ImageSource, OnceResult, PreparedEnv, RemoteBuildConfig } from "./types.ts";
 
 const BOOTSTRAP_TIMEOUT_MS = 30 * 60_000;
@@ -280,9 +280,8 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 		name: "remote_env_init",
 		defaultInactive: true,
 		label: tr("Remote env init", "远程环境初始化"),
-		description:
-			"Prepare this worktree's remote build container and return an initialization report.\n\nTopics — read the one a call needs before making it:\n- `xd://remote_env_init/usage` — before initializing, rebuilding, or recreating a worktree environment",
-		docTopics: () => ({ usage: readFileSync(new URL("./topics/remote_env_init/usage.md", import.meta.url), "utf8") }),
+		description: TOOL_DESCRIPTIONS.remote_env_init,
+		docTopics: () => usageTopics("remote_env_init"),
 		parameters: initSchema,
 		async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
 			const params = initSchema.parse(rawParams);
@@ -300,9 +299,8 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 		name: "remote_env_build_image",
 		defaultInactive: true,
 		label: tr("Remote env build image", "远程环境构建镜像"),
-		description:
-			"Build a candidate project image and run bootstrap for the preparer subagent.\n\nTopics — read the one a call needs before making it:\n- `xd://remote_env_build_image/usage` — before building a candidate or publishing the preparer's final report",
-		docTopics: () => ({ usage: readFileSync(new URL("./topics/remote_env_build_image/usage.md", import.meta.url), "utf8") }),
+		description: TOOL_DESCRIPTIONS.remote_env_build_image,
+		docTopics: () => usageTopics("remote_env_build_image"),
 		parameters: buildSchema,
 		async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
 			const params = buildSchema.parse(rawParams);

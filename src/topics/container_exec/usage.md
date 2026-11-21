@@ -1,6 +1,6 @@
 Open an interactive PTY in the current remote-build container through Komodo, optionally sending initial input.
 
-The result contains a session ID and output. Drive that session with `container_write_stdin`; read `xd://container_write_stdin/usage` before sending input or polling. The container working directory is set by deployment, not this tool.
+The result contains a session ID and output. Drive that session with `container_write_stdin`; read `help://container_write_stdin/usage` before sending input or polling. The container working directory is set by deployment, not this tool.
 
 Komodo reuses the terminal named `shell` per container. Reuse an existing session instead of opening competing clients; `container_list_sessions` lists this environment's sessions.
 
