@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.27] - 2026-11-22
+
 ### Changed
 
 - Migrated all tool doc topic pointers from `xd://` to `help://` and shortened all six tool descriptions to fit within omp 19.1.0's 200-character external command description cap with their `help://<tool>/usage` link
