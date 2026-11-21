@@ -1,7 +1,6 @@
-import { getAnthropicCompactionPayload } from "@oh-my-pi/pi-agent-core";
-import type { BeforeAgentStartEventResult, CompactionEntry, ExtensionContext, SessionEntry } from "@oh-my-pi/pi-coding-agent";
-import { resolveSessionLeafId } from "@oh-my-pi/pi-coding-agent";
-import { getOpenAiRemoteCompactionPayload } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { BeforeAgentStartEventResult, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 
 export type Delta = { readonly kind: "none" } | { readonly kind: "text"; readonly body: string };
 
@@ -11,9 +10,7 @@ type DeltaMessage = Required<Pick<HostMessage, "customType" | "display" | "attri
 	readonly content: Extract<HostMessage["content"], string>;
 };
 
-type CarrierContent =
-	| Extract<Extract<SessionEntry, { type: "message" }>["message"], { role: "custom" | "developer" }>["content"]
-	| Extract<SessionEntry, { type: "custom_message" }>["content"];
+type CarrierContent = Extract<AgentMessage, { role: "custom" | "developer" }>["content"];
 
 export interface DeltaStream {
 	atPrompt(ctx: ExtensionContext, delta: Delta): { message: DeltaMessage } | undefined;
@@ -69,80 +66,23 @@ function lastBlockInContent(source: string, content: CarrierContent): Effective 
 	return undefined;
 }
 
-function carrierBlock(entry: SessionEntry, source: string): Effective | undefined {
-	if (entry.type === "message") {
-		const message = entry.message;
-		if (message.role === "custom") {
-			if (message.customType !== source) return undefined;
-		} else if (message.role === "developer") {
-			if (message.attribution !== "agent") return undefined;
-		} else {
-			return undefined;
-		}
-		return lastBlockInContent(source, message.content);
+function carrierBlock(message: AgentMessage, source: string): Effective | undefined {
+	if (message.role === "custom") {
+		return message.customType === source ? lastBlockInContent(source, message.content) : undefined;
 	}
-	if (entry.type === "custom_message") {
-		if (entry.customType !== source) return undefined;
-		return lastBlockInContent(source, entry.content);
+	if (message.role === "developer") {
+		return message.attribution === "agent" ? lastBlockInContent(source, message.content) : undefined;
 	}
 	return undefined;
 }
 
-type KeptRegionBoundary = { readonly kind: "inclusive"; readonly id: string } | { readonly kind: "exclusive"; readonly id: string };
-type KeptBoundary = { readonly kind: "none" } | KeptRegionBoundary;
-
-function keptBoundary(compaction: CompactionEntry): KeptBoundary {
-	const remote = getOpenAiRemoteCompactionPayload(compaction)?.items;
-	if (remote) {
-		return compaction.providerReplayThroughEntryId ? { kind: "exclusive", id: compaction.providerReplayThroughEntryId } : { kind: "none" };
-	}
-	if (compaction.firstKeptEntryId !== "") return { kind: "inclusive", id: compaction.firstKeptEntryId };
-	if (getAnthropicCompactionPayload(compaction.preserveData) && compaction.providerReplayThroughEntryId) {
-		return { kind: "exclusive", id: compaction.providerReplayThroughEntryId };
-	}
-	return { kind: "none" };
-}
-
-function inProjection(ctx: ExtensionContext, source: string): Effective {
+/** The source's last block among the messages omp builds for the session's current model. */
+function inContext(ctx: ExtensionContext, source: string): Effective {
 	const sessions = ctx.sessionManager;
-	const leafId = sessions.getLeafId();
-	if (leafId === null) return { kind: "absent" };
-	let entry = sessions.getEntry(leafId);
-	if (entry === undefined) {
-		const replayedId = resolveSessionLeafId(sessions.getEntries());
-		if (replayedId === null) return { kind: "absent" };
-		entry = sessions.getEntry(replayedId);
-	}
-	if (entry === undefined) return { kind: "absent" };
-	const seen = new Set<string>();
-	let boundary: KeptRegionBoundary | undefined;
-	let deferred: Effective | undefined;
-	while (true) {
-		if (seen.has(entry.id)) return { kind: "absent" };
-		seen.add(entry.id);
-		if (boundary === undefined) {
-			const block = carrierBlock(entry, source);
-			if (block !== undefined) return block;
-			if (entry.type === "compaction") {
-				const region = keptBoundary(entry);
-				if (region.kind === "none") return { kind: "absent" };
-				boundary = region;
-			} else if (entry.type === "reset_boundary") {
-				return { kind: "absent" };
-			}
-		} else {
-			if (entry.id === boundary.id) {
-				if (boundary.kind === "exclusive") return deferred ?? { kind: "absent" };
-				return deferred ?? carrierBlock(entry, source) ?? { kind: "absent" };
-			}
-			const block = carrierBlock(entry, source);
-			if (deferred === undefined && block !== undefined) deferred = block;
-		}
-		if (!entry.parentId) return { kind: "absent" };
-		const parent = sessions.getEntry(entry.parentId);
-		if (parent === undefined) return { kind: "absent" };
-		entry = parent;
-	}
+	const { messages } = buildSessionContext(sessions.getEntries(), sessions.getLeafId(), undefined, { model: ctx.model });
+	let effective: Effective = { kind: "absent" };
+	for (const message of messages) effective = carrierBlock(message, source) ?? effective;
+	return effective;
 }
 
 function nextText(source: string, effective: Effective, wanted: Delta): string | undefined {
@@ -173,12 +113,12 @@ export function createDeltaStream(source: string): DeltaStream {
 	let batch: Effective | undefined;
 	return {
 		atPrompt(ctx, delta) {
-			const text = nextText(source, inProjection(ctx, source), delta);
+			const text = nextText(source, inContext(ctx, source), delta);
 			if (text === undefined) return undefined;
 			return { message: { customType: source, content: text, display: false, attribution: "agent" } };
 		},
 		afterTools(ctx, delta) {
-			const text = nextText(source, batch ?? inProjection(ctx, source), delta);
+			const text = nextText(source, batch ?? inContext(ctx, source), delta);
 			if (text === undefined) return undefined;
 			batch = delta.kind === "text" ? { kind: "text", body: delta.body } : { kind: "retracted" };
 			return { additionalContext: text };
