@@ -23,7 +23,7 @@ const CONFIG_PATH = ".omp/remote-build.json";
 const TURNS = 24;
 const SCENARIO_BUDGET_MS = 30_000;
 const OBSERVE_DEADLINE_MS = 10_000;
-const CONTAINER = ["container_exec", "container_write_stdin", "container_list_sessions", "container_kill_session"];
+const CONTAINER = ["container_exec", "container_write_stdin"];
 const PROJECT_CONFIG = { workdir: "/workspace", shell: "bash", ignore: ["*.log"], env: { CARGO_TARGET_DIR: "/workspace/target" } };
 
 const fixtureRoot = join(tmpdir(), `rb21-${process.pid}-${Date.now().toString(36)}`);
@@ -200,7 +200,9 @@ function makeCtx(opts: { cwd: string; tree?: TreeSpec; subagent?: boolean; moveT
 		"getCwd" | "getEntries" | "getEntry" | "getChildren" | "getLeafEntry" | "getBranch" | "getTree" | "getHeader"
 	>;
 	const ui = {
-		notify: (message: string, level: string) => notifications.push({ message, level }),
+		notify: (message: string, level = "info") => {
+			notifications.push({ message, level });
+		},
 		setStatus: () => {},
 	} satisfies Partial<ExtensionUIContext>;
 	const agent = {
@@ -211,7 +213,7 @@ function makeCtx(opts: { cwd: string; tree?: TreeSpec; subagent?: boolean; moveT
 	} satisfies ExtensionAgentIdentity;
 	const context = {
 		cwd: opts.cwd,
-		sessionManager: sessionManager as ReadonlySessionManager,
+		sessionManager: sessionManager as unknown as ReadonlySessionManager,
 		agent,
 		ui,
 	} as unknown as ExtensionContext;

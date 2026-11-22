@@ -33,18 +33,14 @@ const NON_WRITING_TOOLS: Record<string, true> = {
 	wait: true,
 	container_exec: true,
 	container_write_stdin: true,
-	container_list_sessions: true,
-	container_kill_session: true,
 	remote_env_build_image: true,
 };
 
-const CONTAINER_TOOLS = ["container_exec", "container_write_stdin", "container_list_sessions", "container_kill_session"];
+const CONTAINER_TOOLS = ["container_exec", "container_write_stdin"];
 
 const PLUGIN_TOOLS: Record<string, true> = {
 	container_exec: true,
 	container_write_stdin: true,
-	container_list_sessions: true,
-	container_kill_session: true,
 	remote_env_init: true,
 	remote_env_build_image: true,
 };
@@ -320,8 +316,9 @@ function parseGitfile(gitfile: string): string | undefined {
 		return undefined;
 	}
 	const match = /^gitdir: (.+)$/m.exec(text);
-	if (match === null) return undefined;
-	const target = match[1].trim();
+	const rawTarget = match?.[1];
+	if (rawTarget === undefined) return undefined;
+	const target = rawTarget.trim();
 	return isAbsolute(target) ? target : join(dirname(gitfile), target);
 }
 

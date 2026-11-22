@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { type ExtensionAPI, type ExtensionContext, z } from "@oh-my-pi/pi-coding-agent";
+import { z } from "@oh-my-pi/omptype/zod";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { tr } from "../omomp-shared/i18n.ts";
 import { BASE_IMAGE } from "./project.ts";
 import type { PreparedEnv } from "./types.ts";
@@ -51,7 +52,7 @@ Image rules
 Workflow
 1. Read the project: README and contributing docs, manifests and lockfiles, toolchain pins (rust-toolchain, .nvmrc, .python-version, go.mod, .tool-versions), CI workflows, Makefile or justfile. Determine the build, test and run commands.
 2. The container currently runs rb-base-archlinux:latest. Try installs and commands there with container_exec; nothing there persists.
-3. Call remote_env_build_image with the complete Dockerfile and the bootstrap command. It builds a candidate image, recreates the container from it, runs the bootstrap command and returns the output. On failure, fix and call it again.
+3. Call remote_env_build_image with the complete Dockerfile and the bootstrap command (empty string for none). It builds a candidate image, recreates the container from it (ending open container sessions), runs the bootstrap command and returns the output. Other agents use remote_env_init. On failure, fix and call it again.
 4. After a successful call, open a new container_exec session (earlier sessions ended when the container was recreated). Run the project's build, then its tests or main run command, and read every exit code with \`echo $?\`. If something is missing, change the Dockerfile or bootstrap and call remote_env_build_image again.
 5. You are done only when, in the container created by your last successful remote_env_build_image call, the build and the tests (or the main run command when there are no tests) exit 0; only then report result: success. Any other result publishes nothing. If a command cannot pass for a reason outside the environment (secrets, external services, tests failing in the code itself), stop and report result: partial or failed with the exact reason and its output.
 

@@ -35,6 +35,11 @@
 		"changelog": "CHANGELOG.md"
 	},
 	"peerDependencies": {
+		"@oh-my-pi/omptype": "*",
+		"@oh-my-pi/pi-agent-core": "*",
+		"@oh-my-pi/pi-coding-agent": "*",
+		"@oh-my-pi/pi-tui": "*",
+		"@oh-my-pi/pi-utils": "*",
 		"omp-unified-exec": "*"
 	},
 	"peerDependenciesMeta": {
@@ -48,10 +53,13 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "latest",
+		"@oh-my-pi/omptype": "latest",
 		"@oh-my-pi/pi-agent-core": "latest",
 		"@oh-my-pi/pi-coding-agent": "latest",
+		"@oh-my-pi/pi-tui": "latest",
+		"@oh-my-pi/pi-utils": "latest",
 		"@types/bun": "latest",
-		"omp-unified-exec": "github:oh-my-omp/omp-unified-exec",
+		"omp-unified-exec": "github:oh-my-omp/omp-actual-terminal",
 		"typescript": "latest"
 	}
 }

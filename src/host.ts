@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
+import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
 import { type Diagnostic, RemoteBuildError } from "./diagnostics.ts";
 import type { HostConfig } from "./types.ts";
 

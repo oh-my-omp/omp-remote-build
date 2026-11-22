@@ -1,22 +1,12 @@
-import { readFileSync } from "node:fs";
-
 export const TOOL_DESCRIPTIONS = {
 	container_exec:
-		"Open an interactive PTY in the current remote-build container through Komodo. Read `help://container_exec/usage` before opening a container terminal or reading exit status.",
+		"Open an interactive PTY in the current remote-build container via Komodo (reuses the container shell; drive with container_write_stdin). Use `read cterm://` to list container sessions and `write cterm://<id>/kill` to terminate one. Note: km always exits 0 (local transport only); read command exit codes from shell output via `echo $?`.",
 	container_write_stdin:
-		"Send characters to a container PTY and/or poll for output. Read `help://container_write_stdin/usage` before sending input, polling output, or interpreting exit status.",
-	container_list_sessions:
-		"List container PTY sessions for the current remote-build environment. Read `help://container_list_sessions/usage` before listing sessions or interpreting ended/transport status.",
-	container_kill_session:
-		"Terminate the local km PTY client for a container session. Read `help://container_kill_session/usage` before terminating a client or choosing how to end its remote shell.",
+		"Send verbatim text, enter, special_key, or raw_base64 to a container PTY (or omit input to poll output; default yield 250 ms). Note: km always exits 0 (local transport only); read command exit codes from shell output via `echo $?`.",
 	remote_env_init:
-		"Prepare this worktree's remote build container and return an initialization report. Read `help://remote_env_init/usage` before initializing, rebuilding, or recreating an environment.",
+		"Prepare this worktree's remote build container (resolve/cache image per Dockerfile content, recreate container ending open sessions, run bootstrap). Call before container_exec or after dependency changes; see `rebuild` for image/prepare.",
 	remote_env_build_image:
-		"Build a candidate project image and run bootstrap for the preparer subagent. Read `help://remote_env_build_image/usage` before building a candidate or publishing the preparer report.",
+		"Preparer-only: build a candidate image (final stage FROM rb-base-archlinux:latest, empty context so no COPY/ADD), recreate the container, and run single-line bootstrap. Published on final `result: success`; other agents use remote_env_init.",
 } as const;
 
 export type PluginToolName = keyof typeof TOOL_DESCRIPTIONS;
-
-export function usageTopics(tool: PluginToolName): Readonly<Record<string, string>> {
-	return { usage: readFileSync(new URL(`./topics/${tool}/usage.md`, import.meta.url), "utf8") };
-}

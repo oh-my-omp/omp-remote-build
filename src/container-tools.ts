@@ -1,20 +1,51 @@
+import { z } from "@oh-my-pi/omptype/zod";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionAPI, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail, z } from "@oh-my-pi/pi-coding-agent";
+import {
+	type InternalResource,
+	type InternalUrl,
+	InternalUrlRouter,
+	type InternalWriteResult,
+	type ProtocolHandler,
+	type ResolveContext,
+	type SchemeSpec,
+	type WriteContext,
+} from "@oh-my-pi/pi-coding-agent/internal-urls";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import type { CollectResult } from "omp-unified-exec/src/collect.ts";
 import { waitForExitOrDeadline } from "omp-unified-exec/src/long-wait.ts";
 import { sanitizeOutputText } from "omp-unified-exec/src/output-safety.ts";
 import { requireBunRuntime } from "omp-unified-exec/src/pty.ts";
 import { ExecSession } from "omp-unified-exec/src/session.ts";
 import { SessionStore } from "omp-unified-exec/src/session-store.ts";
-import { unescapeChars } from "omp-unified-exec/src/unescape.ts";
 import { tr } from "../omomp-shared/i18n.ts";
+import { registerInternalScheme } from "../omomp-shared/internal-url.ts";
 import { containerRunning, execArgv } from "./komodo.ts";
-import { TOOL_DESCRIPTIONS, usageTopics } from "./tool-docs.ts";
+import { TOOL_DESCRIPTIONS } from "./tool-docs.ts";
 import type { PreparedEnv } from "./types.ts";
 
 const EXIT_NOTE =
 	"km always exits 0; this is only the local transport's exit code. Read command exit codes from the container shell output, e.g. echo $? immediately after the command.";
 const encoder = new TextEncoder();
+const ctermHandlerBrand = Symbol.for("omp-remote-build.cterm-handler");
+
+const SPECIAL_KEYS = ["ctrl-c", "ctrl-d", "ctrl-z", "esc", "tab", "up", "down", "left", "right", "backspace", "delete"] as const;
+
+type SpecialKey = (typeof SPECIAL_KEYS)[number];
+
+const SPECIAL_KEY_BYTES: Readonly<Record<SpecialKey, string>> = {
+	"ctrl-c": "\x03",
+	"ctrl-d": "\x04",
+	"ctrl-z": "\x1a",
+	esc: "\x1b",
+	tab: "\t",
+	up: "\x1b[A",
+	down: "\x1b[B",
+	left: "\x1b[D",
+	right: "\x1b[C",
+	backspace: "\x7f",
+	delete: "\x1b[3~",
+};
+
 const yieldSchema = z
 	.number()
 	.int()
@@ -24,24 +55,28 @@ const yieldSchema = z
 	.describe("Attachment window in milliseconds, not a command timeout; 250–30000.");
 const sessionIdSchema = z.number().int().positive().describe("Session ID returned by container_exec, scoped to the current environment.");
 const execSchema = z.object({
-	input: z
-		.string()
-		.optional()
-		.describe("Optional initial shell input. C-style escapes are decoded, including \\n, \\x03 and \\x1b; no newline is appended."),
+	input: z.string().optional().describe("Optional initial shell input written verbatim (include trailing newline to execute)."),
 	yield_time_ms: yieldSchema,
 });
 const writeSchema = z.object({
 	session_id: sessionIdSchema,
-	chars: z
+	text: z
 		.string()
 		.optional()
+		.describe("Verbatim UTF-8 text to write to stdin (no backslash escaping). Mutually exclusive with raw_base64."),
+	enter: z
+		.boolean()
+		.optional()
+		.describe("Append Enter (\\r) after text/special_key, or send Enter alone. Mutually exclusive with raw_base64."),
+	special_key: z
+		.enum(SPECIAL_KEYS)
+		.optional()
 		.describe(
-			"Input with C-style escapes (\\n, \\r, \\t, \\xHH, \\uHHHH, \\u{H…}, \\e, \\0, \\\\). Unknown escapes are preserved. Omit or pass empty string to poll.",
+			"Control or navigation key (ctrl-c, ctrl-d, ctrl-z, esc, tab, up, down, left, right, backspace, delete). Mutually exclusive with raw_base64.",
 		),
+	raw_base64: z.string().optional().describe("Raw bytes encoded as base64. Mutually exclusive with text, enter, and special_key."),
 	yield_time_ms: yieldSchema,
 });
-const killSchema = z.object({ session_id: sessionIdSchema });
-const listSchema = z.object({});
 
 type TransportState =
 	| { readonly status: "running" }
@@ -177,9 +212,29 @@ async function collectSession(
 	}
 }
 
-function sendInput(session: ExecSession, input: string | undefined): void {
-	if (input && !session.write(encoder.encode(unescapeChars(input)))) {
-		throw new Error(`Container session ${session.id} stdin is closed; poll without chars to read its final output.`);
+function resolveWriteBytes(params: z.infer<typeof writeSchema>): Uint8Array | undefined {
+	const hasText = typeof params.text === "string" && params.text.length > 0;
+	const hasEnter = params.enter === true;
+	const hasSpecialKey = params.special_key !== undefined;
+	const hasB64 = typeof params.raw_base64 === "string" && params.raw_base64.length > 0;
+	if (hasB64 && (hasText || hasEnter || hasSpecialKey)) {
+		throw new Error("container_write_stdin: `raw_base64` cannot be combined with `text`, `enter`, or `special_key`.");
+	}
+	if (hasB64) {
+		const b64 = params.raw_base64!.replace(/\s+/g, "");
+		if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) {
+			throw new Error("container_write_stdin: `raw_base64` is not valid base64.");
+		}
+		return new Uint8Array(Buffer.from(b64, "base64"));
+	}
+	const combined =
+		(params.text ?? "") + (params.special_key !== undefined ? SPECIAL_KEY_BYTES[params.special_key] : "") + (hasEnter ? "\r" : "");
+	return combined.length > 0 ? encoder.encode(combined) : undefined;
+}
+
+function sendRawBytes(session: ExecSession, bytes: Uint8Array | undefined): void {
+	if (bytes && bytes.length > 0 && !session.write(bytes)) {
+		throw new Error(`Container session ${session.id} stdin is closed; omit input to read its final output.`);
 	}
 }
 
@@ -201,6 +256,104 @@ async function terminateSession(session: ExecSession, mode: "graceful" | "immedi
 		);
 }
 
+function registerContainerUrls(
+	store: SessionStore,
+	ensureEnv: (cwd: string) => Promise<PreparedEnv>,
+	getSession: (id: number, env: PreparedEnv) => ExecSession,
+): void {
+	const router = InternalUrlRouter.instance();
+	const resolveCwd = (context?: ResolveContext | WriteContext): string => {
+		const cwd = context?.cwd ?? context?.session?.cwd;
+		if (!cwd) throw new Error("cterm:// requires a working directory (context.cwd).");
+		return cwd;
+	};
+	const spec: SchemeSpec = {
+		backing: "virtual",
+		selectors: "lines",
+		immutable: true,
+		write: {
+			via: "handler",
+			payload: "verbatim",
+			scope: "workspace",
+			tier: () => "exec",
+			cancels: () => true,
+		},
+	};
+	const handler: ProtocolHandler & { readonly [ctermHandlerBrand]: true } = {
+		[ctermHandlerBrand]: true,
+		scheme: "cterm",
+		spec,
+		async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+			const host = url.rawHost || url.hostname;
+			const path = url.rawPathname ?? url.pathname;
+			if (!host) {
+				if (path !== "" && path !== "/") {
+					throw new Error(`Invalid cterm:// URL: ${url.href}. Use cterm:// or cterm://<id>.`);
+				}
+				const env = await ensureEnv(resolveCwd(context));
+				const sessions = store
+					.values()
+					.filter((session) => session.cwd === env.root)
+					.map((session) => ({
+						session_id: session.id,
+						url: `cterm://${session.id}`,
+						transport: transportState(session),
+						command: sanitizeOutputText(session.displayCommand),
+						cwd: session.cwd,
+						log_path: session.logPath,
+						started_at_ms: session.startedAt,
+						failure_message: session.failureMessage,
+					}));
+				return {
+					url: url.href,
+					content: `${JSON.stringify(sessions, null, 2)}\n${EXIT_NOTE}`,
+					contentType: "text/plain",
+					immutable: true,
+					isDirectory: true,
+				};
+			}
+			if (path === "/kill") {
+				throw new Error(
+					`cterm://${host}/kill is write-only; reading it did not stop anything. Call write with ${JSON.stringify({ path: `cterm://${host}/kill`, content: "" })} to terminate, or read cterm://${host} for output.`,
+				);
+			}
+			if (path !== "" && path !== "/") {
+				throw new Error(`Invalid cterm:// URL: ${url.href}. Use cterm://, cterm://<id>, or write cterm://<id>/kill.`);
+			}
+			if (!/^\d+$/.test(host)) {
+				throw new Error(`Invalid container session id: ${host}`);
+			}
+			const env = await ensureEnv(resolveCwd(context));
+			const session = getSession(Number(host), env);
+			const result = await collectSession(session, 50, context?.signal, undefined, store);
+			const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+			return { url: url.href, content: text, contentType: "text/plain", immutable: true };
+		},
+		async write(url: InternalUrl, _content: string, context?: WriteContext): Promise<InternalWriteResult> {
+			const host = url.rawHost || url.hostname;
+			const path = url.rawPathname ?? url.pathname;
+			if (!host || path !== "/kill" || !/^\d+$/.test(host)) {
+				throw new Error(`Unsupported cterm:// write target "${url.href}"; use cterm://<id>/kill.`);
+			}
+			const env = await ensureEnv(resolveCwd(context));
+			const session = getSession(Number(host), env);
+			await terminateSession(session, "graceful");
+			const result = await collectSession(session, 500, context?.signal, undefined, store);
+			await session.release();
+			store.remove(session.id);
+			return { content: result.content, details: { touchesNoFiles: true } };
+		},
+	};
+	const existing = router.getHandler("cterm");
+	if (existing !== undefined && ctermHandlerBrand in existing && existing[ctermHandlerBrand] === true) {
+		router.unregister("cterm");
+	}
+	const outcome = registerInternalScheme(router, "omp-remote-build/cterm", handler);
+	if (outcome.kind !== "registered") {
+		throw new Error(`omp-remote-build: failed to register cterm:// (${outcome.reason})`);
+	}
+}
+
 export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => Promise<PreparedEnv>): void {
 	const store = new SessionStore({ maxSessions: 64, lruProtectedCount: 8 });
 	let lifecycle: "active" | "shutdown" = "active";
@@ -209,6 +362,8 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 		if (!session || session.cwd !== env.root) throw new Error(`Unknown container session ${id} in environment ${env.root}.`);
 		return session;
 	};
+
+	registerContainerUrls(store, ensureEnv, getSession);
 
 	pi.on("session_shutdown", async () => {
 		lifecycle = "shutdown";
@@ -224,10 +379,10 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 
 	const execTool = {
 		name: "container_exec",
+		loadMode: "essential" as const,
 		defaultInactive: true,
 		label: tr("Container exec", "容器执行"),
 		description: TOOL_DESCRIPTIONS.container_exec,
-		docTopics: () => usageTopics("container_exec"),
 		parameters: execSchema,
 		async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
 			const params = execSchema.parse(rawParams);
@@ -252,76 +407,27 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 			});
 			if (session.failureMessage) throw new Error(`Could not open container PTY: ${session.failureMessage}`);
 			store.insert(session);
-			sendInput(session, params.input);
+			sendRawBytes(session, params.input ? encoder.encode(params.input) : undefined);
 			return collectSession(session, params.yield_time_ms ?? 10_000, signal, onUpdate, store);
 		},
-	} satisfies ToolDefinition<typeof execSchema> & { docTopics(): Readonly<Record<string, string>> };
+	} satisfies ToolDefinition<typeof execSchema>;
 	pi.registerTool(execTool);
 
 	const writeTool = {
 		name: "container_write_stdin",
+		loadMode: "essential" as const,
 		defaultInactive: true,
 		label: tr("Container stdin", "容器标准输入"),
 		description: TOOL_DESCRIPTIONS.container_write_stdin,
-		docTopics: () => usageTopics("container_write_stdin"),
 		parameters: writeSchema,
 		async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
 			const params = writeSchema.parse(rawParams);
+			const bytes = resolveWriteBytes(params);
 			const env = await ensureEnv(ctx.cwd);
 			const session = getSession(params.session_id, env);
-			sendInput(session, params.chars);
+			sendRawBytes(session, bytes);
 			return collectSession(session, params.yield_time_ms ?? 250, signal, onUpdate, store);
 		},
-	} satisfies ToolDefinition<typeof writeSchema> & { docTopics(): Readonly<Record<string, string>> };
+	} satisfies ToolDefinition<typeof writeSchema>;
 	pi.registerTool(writeTool);
-
-	const listTool = {
-		name: "container_list_sessions",
-		defaultInactive: true,
-		label: tr("Container sessions", "容器会话"),
-		description: TOOL_DESCRIPTIONS.container_list_sessions,
-		docTopics: () => usageTopics("container_list_sessions"),
-		parameters: listSchema,
-		async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
-			listSchema.parse(rawParams);
-			const env = await ensureEnv(ctx.cwd);
-			const sessions = store
-				.values()
-				.filter((session) => session.cwd === env.root)
-				.map((session) => ({
-					session_id: session.id,
-					transport: transportState(session),
-					command: sanitizeOutputText(session.displayCommand),
-					cwd: session.cwd,
-					log_path: session.logPath,
-					started_at_ms: session.startedAt,
-					failure_message: session.failureMessage,
-				}));
-			return {
-				content: [{ type: "text", text: `${JSON.stringify(sessions, null, 2)}\n${EXIT_NOTE}` }],
-				details: { sessions },
-			};
-		},
-	} satisfies ToolDefinition<typeof listSchema> & { docTopics(): Readonly<Record<string, string>> };
-	pi.registerTool(listTool);
-
-	const killTool = {
-		name: "container_kill_session",
-		defaultInactive: true,
-		label: tr("Kill container session", "终止容器会话"),
-		description: TOOL_DESCRIPTIONS.container_kill_session,
-		docTopics: () => usageTopics("container_kill_session"),
-		parameters: killSchema,
-		async execute(_toolCallId, rawParams, _signal, onUpdate, ctx) {
-			const params = killSchema.parse(rawParams);
-			const env = await ensureEnv(ctx.cwd);
-			const session = getSession(params.session_id, env);
-			await terminateSession(session, "graceful");
-			const result = await collectSession(session, 500, undefined, onUpdate, store);
-			await session.release();
-			store.remove(session.id);
-			return result;
-		},
-	} satisfies ToolDefinition<typeof killSchema> & { docTopics(): Readonly<Record<string, string>> };
-	pi.registerTool(killTool);
 }

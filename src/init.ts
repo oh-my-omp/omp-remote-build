@@ -1,5 +1,5 @@
+import { z } from "@oh-my-pi/omptype/zod";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
-import { z } from "@oh-my-pi/pi-coding-agent";
 import { tr } from "../omomp-shared/i18n.ts";
 import { CONFIG_PATH, GENERATED_DOCKERFILE, loadConfig, PREPARER_REPORT, publishPreparedImage, readPreparerReport } from "./config.ts";
 import { envContainerSpec, mainCheckout, projectIdFor } from "./environment.ts";
@@ -18,7 +18,7 @@ import {
 	stageBases,
 } from "./project.ts";
 import { readRemoteFile, removeRemoteDir, writeRemoteFile } from "./remote-files.ts";
-import { TOOL_DESCRIPTIONS, usageTopics } from "./tool-docs.ts";
+import { TOOL_DESCRIPTIONS } from "./tool-docs.ts";
 import type { DockerfileRef, ImageSource, OnceResult, PreparedEnv, RemoteBuildConfig } from "./types.ts";
 
 const BOOTSTRAP_TIMEOUT_MS = 30 * 60_000;
@@ -278,10 +278,10 @@ async function initEnvironment(
 export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => Promise<PreparedEnv>): void {
 	const initTool = {
 		name: "remote_env_init",
+		loadMode: "essential" as const,
 		defaultInactive: true,
 		label: tr("Remote env init", "远程环境初始化"),
 		description: TOOL_DESCRIPTIONS.remote_env_init,
-		docTopics: () => usageTopics("remote_env_init"),
 		parameters: initSchema,
 		async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
 			const params = initSchema.parse(rawParams);
@@ -292,15 +292,15 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 			const report = await initEnvironment(pi, ctx, await ensureEnv(ctx.cwd), mode, signal);
 			return { content: [{ type: "text", text: report }], details: { report } };
 		},
-	} satisfies ToolDefinition<typeof initSchema> & { docTopics(): Readonly<Record<string, string>> };
+	} satisfies ToolDefinition<typeof initSchema>;
 	pi.registerTool(initTool);
 
 	const buildTool = {
 		name: "remote_env_build_image",
+		loadMode: "essential" as const,
 		defaultInactive: true,
 		label: tr("Remote env build image", "远程环境构建镜像"),
 		description: TOOL_DESCRIPTIONS.remote_env_build_image,
-		docTopics: () => usageTopics("remote_env_build_image"),
 		parameters: buildSchema,
 		async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
 			const params = buildSchema.parse(rawParams);
@@ -349,6 +349,6 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 			const text = lines.join("\n");
 			return { content: [{ type: "text", text }], details: { report: text } };
 		},
-	} satisfies ToolDefinition<typeof buildSchema> & { docTopics(): Readonly<Record<string, string>> };
+	} satisfies ToolDefinition<typeof buildSchema>;
 	pi.registerTool(buildTool);
 }

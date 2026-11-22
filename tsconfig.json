@@ -6,8 +6,12 @@
 		"allowImportingTsExtensions": true,
 		"noEmit": true,
 		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noFallthroughCasesInSwitch": true,
+		"verbatimModuleSyntax": true,
 		"skipLibCheck": true,
 		"types": ["bun"]
 	},
-	"include": ["src", "omomp-shared"]
+	"include": ["src", "omomp-shared", "test", "accept"]
 }

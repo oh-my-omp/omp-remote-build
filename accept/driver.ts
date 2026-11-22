@@ -34,21 +34,18 @@ function countStdout(stdout: unknown): ReadableStream<Uint8Array> | undefined {
 }
 
 const realBunSpawn = Bun.spawn;
-Bun.spawn = function bsWrapper(optionsOrArgs, options) {
+type InterceptedSubprocess = Bun.Subprocess<"ignore" | "pipe", "pipe", "pipe">;
+Bun.spawn = ((optionsOrArgs: unknown, options?: unknown) => {
 	spawnCount++;
-	let child: Bun.Subprocess<"ignore", "pipe", "pipe">;
-	if (Array.isArray(optionsOrArgs)) {
-		child = realBunSpawn(optionsOrArgs, options);
-	} else {
-		child = realBunSpawn(optionsOrArgs);
-	}
+	const spawnFn = realBunSpawn as (first: unknown, second?: unknown) => InterceptedSubprocess;
+	const child = options !== undefined ? spawnFn(optionsOrArgs, options) : spawnFn(optionsOrArgs);
 	const spawnOptions: unknown = Array.isArray(optionsOrArgs) ? options : optionsOrArgs;
 	const stdinOption = (spawnOptions as { stdin?: unknown } | undefined)?.stdin;
 	if (stdinOption instanceof Uint8Array) {
 		stdinOptionBytes += stdinOption.byteLength;
 	}
 	const wrappedStdout = countStdout(child.stdout);
-	let view: Bun.Subprocess<"ignore", "pipe", "pipe"> = child;
+	let view: InterceptedSubprocess = child;
 	if (wrappedStdout !== undefined) {
 		view = new Proxy(child, {
 			get(target, prop) {
@@ -59,21 +56,20 @@ Bun.spawn = function bsWrapper(optionsOrArgs, options) {
 		});
 	}
 	const stdinPipe = child.stdin;
-	if (stdinPipe) {
+	if (stdinPipe && typeof stdinPipe !== "number") {
 		const origWrite = stdinPipe.write.bind(stdinPipe);
-		stdinPipe.write = function wp(...wArgs: unknown[]) {
+		stdinPipe.write = ((...wArgs: Parameters<typeof stdinPipe.write>) => {
 			const first = wArgs[0];
 			if (typeof first === "string") {
 				stdinPipeBytes += Buffer.byteLength(first);
 			} else if (first instanceof Uint8Array) {
 				stdinPipeBytes += first.byteLength;
 			}
-			type TypedWriteArgs = Parameters<typeof stdinPipe.write>;
-			return origWrite(...(wArgs as TypedWriteArgs));
-		};
+			return origWrite(...wArgs);
+		}) as typeof stdinPipe.write;
 	}
 	return view;
-};
+}) as typeof Bun.spawn;
 
 const configDir = join(repoRoot, ".omp");
 if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
