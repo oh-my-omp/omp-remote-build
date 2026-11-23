@@ -31,6 +31,7 @@ test("retained plugin tools inline core guidance without help:// or xd:// topics
 		expect(description).not.toContain("xd://");
 	}
 	expect(TOOL_DESCRIPTIONS.container_exec).toContain("read cterm://");
+	expect(TOOL_DESCRIPTIONS.container_exec).toContain("write cterm://<id>");
 	expect(TOOL_DESCRIPTIONS.container_exec).toContain("write cterm://<id>/kill");
 	expect(TOOL_DESCRIPTIONS.container_exec).toContain("km always exits 0");
 	expect(TOOL_DESCRIPTIONS.container_write_stdin).toContain("km always exits 0");
@@ -80,9 +81,11 @@ test("cterm:// registers conditionally without promptDoc and lists empty session
 	expect(handler?.promptDoc).toBeUndefined();
 	expect(handler?.spec.write?.via).toBe("handler");
 	expect(handler?.spec.write?.cancels?.(parseInternalUrl("cterm://1/kill"))).toBe(true);
+	expect(handler?.spec.write?.cancels?.(parseInternalUrl("cterm://1"))).toBe(false);
 
 	const listing = await router.resolve("cterm://", { cwd: "/tmp/worktree" });
 	expect(listing.content).toContain("[]");
 	expect(listing.content).toContain("km always exits 0");
 	await expect(router.resolve("cterm://1/kill", { cwd: "/tmp/worktree" })).rejects.toThrow(/write-only/);
+	await expect(router.write("cterm://999", "echo hi", { cwd: "/tmp/worktree" })).rejects.toThrow(/Unknown container session 999/);
 });

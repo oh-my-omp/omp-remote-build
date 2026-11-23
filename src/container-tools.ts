@@ -276,7 +276,7 @@ function registerContainerUrls(
 			payload: "verbatim",
 			scope: "workspace",
 			tier: () => "exec",
-			cancels: () => true,
+			cancels: (url) => (url.rawPathname ?? url.pathname).endsWith("/kill"),
 		},
 	};
 	const handler: ProtocolHandler & { readonly [ctermHandlerBrand]: true } = {
@@ -329,14 +329,29 @@ function registerContainerUrls(
 			const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
 			return { url: url.href, content: text, contentType: "text/plain", immutable: true };
 		},
-		async write(url: InternalUrl, _content: string, context?: WriteContext): Promise<InternalWriteResult> {
+		async write(url: InternalUrl, content: string, context?: WriteContext): Promise<InternalWriteResult> {
 			const host = url.rawHost || url.hostname;
 			const path = url.rawPathname ?? url.pathname;
-			if (!host || path !== "/kill" || !/^\d+$/.test(host)) {
-				throw new Error(`Unsupported cterm:// write target "${url.href}"; use cterm://<id>/kill.`);
+			if (!host) {
+				throw new Error("cterm:// is read-only; write to cterm://<id> or cterm://<id>/kill.");
+			}
+			if (!/^\d+$/.test(host)) {
+				throw new Error(`Invalid container session id: ${host}`);
+			}
+			const id = Number(host);
+			if (path === "" || path === "/") {
+				const env = await ensureEnv(resolveCwd(context));
+				const session = getSession(id, env);
+				const data = /[\r\n]$/.test(content) ? content : `${content}\r`;
+				sendRawBytes(session, encoder.encode(data));
+				const result = await collectSession(session, 250, context?.signal, undefined, store);
+				return { content: result.content, details: { touchesNoFiles: true } };
+			}
+			if (path !== "/kill") {
+				throw new Error(`Unsupported cterm:// write target "${url.href}"; use cterm://<id> or cterm://<id>/kill.`);
 			}
 			const env = await ensureEnv(resolveCwd(context));
-			const session = getSession(Number(host), env);
+			const session = getSession(id, env);
 			await terminateSession(session, "graceful");
 			const result = await collectSession(session, 500, context?.signal, undefined, store);
 			await session.release();
