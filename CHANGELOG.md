@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Switched the container PTY layer from `omp-unified-exec` to its renamed successor `omp-actual-terminal` (peer dependency and imports); install `https://github.com/oh-my-omp/omp-actual-terminal#release` alongside this plugin
+
 ## [0.1.27] - 2026-11-22
 
 ### Changed
