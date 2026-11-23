@@ -12,7 +12,7 @@
         "@oh-my-pi/pi-tui": "latest",
         "@oh-my-pi/pi-utils": "latest",
         "@types/bun": "latest",
-        "omp-unified-exec": "github:oh-my-omp/omp-actual-terminal",
+        "omp-actual-terminal": "github:oh-my-omp/omp-actual-terminal",
         "typescript": "latest",
       },
       "peerDependencies": {
@@ -21,10 +21,10 @@
         "@oh-my-pi/pi-coding-agent": "*",
         "@oh-my-pi/pi-tui": "*",
         "@oh-my-pi/pi-utils": "*",
-        "omp-unified-exec": "*",
+        "omp-actual-terminal": "*",
       },
       "optionalPeers": [
-        "omp-unified-exec",
+        "omp-actual-terminal",
       ],
     },
   },
@@ -205,7 +205,7 @@
 
     "modern-tar": ["modern-tar@0.7.7", "", {}, "sha512-t9VmxaqrmANnEOBhpSDI6HD192Ge48k8vmWqQQL7hSFEqHEYwZbbsu49+aKLWZeRvFs3j1pMhXOqqF4kPlvjkQ=="],
 
-    "omp-unified-exec": ["omp-unified-exec@github:oh-my-omp/omp-actual-terminal#3ee8a23", { "dependencies": { "@xterm/headless": "latest" }, "peerDependencies": { "@oh-my-pi/omptype": "*", "@oh-my-pi/pi-ai": "*", "@oh-my-pi/pi-coding-agent": "*", "@oh-my-pi/pi-natives": "*", "@oh-my-pi/pi-tui": "*", "@oh-my-pi/pi-utils": "*" } }, "oh-my-omp-omp-actual-terminal-3ee8a23", "sha512-O23xJlmWN85ipuydbmaLjsYs3NSMTnQPX+jiMJdPzl+u3AVyCE5/JvxI5OW79KvCNf2KQtHD9T3mQ/tPSv070A=="],
+    "omp-actual-terminal": ["omp-actual-terminal@github:oh-my-omp/omp-actual-terminal#ceb3de6", { "dependencies": { "@xterm/headless": "latest" }, "peerDependencies": { "@oh-my-pi/omptype": "*", "@oh-my-pi/pi-ai": "*", "@oh-my-pi/pi-coding-agent": "*", "@oh-my-pi/pi-natives": "*", "@oh-my-pi/pi-tui": "*", "@oh-my-pi/pi-utils": "*" } }, "oh-my-omp-omp-actual-terminal-ceb3de6", "sha512-6JY+XOO3AVB7pJBJCF7AEQnEM/7+XwnjPW5Pmd/BQWtxDhpQZHxjLVNWnRWXif9eNIA/vnZcNgs1Q5E78187mQ=="],
 
     "puppeteer-core": ["puppeteer-core@25.3.0", "", { "dependencies": { "@puppeteer/browsers": "3.0.6", "chromium-bidi": "16.0.1", "devtools-protocol": "0.0.1638949", "typed-query-selector": "^2.12.2", "webdriver-bidi-protocol": "0.4.2", "ws": "^8.21.0" } }, "sha512-fm+wpUr2oigH1PXZvwgATrM2tYWHMDG8ASzTEe9uukCye4X5Ldx1K5BTHPFKITrIWvQQAQ256d1NpbEveBcKjA=="],
 

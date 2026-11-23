@@ -40,10 +40,10 @@
 		"@oh-my-pi/pi-coding-agent": "*",
 		"@oh-my-pi/pi-tui": "*",
 		"@oh-my-pi/pi-utils": "*",
-		"omp-unified-exec": "*"
+		"omp-actual-terminal": "*"
 	},
 	"peerDependenciesMeta": {
-		"omp-unified-exec": {
+		"omp-actual-terminal": {
 			"optional": true
 		}
 	},
@@ -59,7 +59,7 @@
 		"@oh-my-pi/pi-tui": "latest",
 		"@oh-my-pi/pi-utils": "latest",
 		"@types/bun": "latest",
-		"omp-unified-exec": "github:oh-my-omp/omp-actual-terminal",
+		"omp-actual-terminal": "github:oh-my-omp/omp-actual-terminal",
 		"typescript": "latest"
 	}
 }

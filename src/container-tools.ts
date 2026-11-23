@@ -11,12 +11,12 @@ import {
 	type WriteContext,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
-import type { CollectResult } from "omp-unified-exec/src/collect.ts";
-import { waitForExitOrDeadline } from "omp-unified-exec/src/long-wait.ts";
-import { sanitizeOutputText } from "omp-unified-exec/src/output-safety.ts";
-import { requireBunRuntime } from "omp-unified-exec/src/pty.ts";
-import { ExecSession } from "omp-unified-exec/src/session.ts";
-import { SessionStore } from "omp-unified-exec/src/session-store.ts";
+import type { CollectResult } from "omp-actual-terminal/src/collect.ts";
+import { waitForExitOrDeadline } from "omp-actual-terminal/src/long-wait.ts";
+import { sanitizeOutputText } from "omp-actual-terminal/src/output-safety.ts";
+import { requireBunRuntime } from "omp-actual-terminal/src/pty.ts";
+import { ExecSession } from "omp-actual-terminal/src/session.ts";
+import { SessionStore } from "omp-actual-terminal/src/session-store.ts";
 import { tr } from "../omomp-shared/i18n.ts";
 import { registerInternalScheme } from "../omomp-shared/internal-url.ts";
 import { containerRunning, execArgv } from "./komodo.ts";
@@ -132,6 +132,10 @@ function assertNever(value: never): never {
 	throw new Error(`Unexpected collection result: ${String(value)}`);
 }
 
+function sessionNumber(session: ExecSession): number {
+	return Number(session.id);
+}
+
 function liveObserved(session: ExecSession): Observed {
 	return { text: session.liveSnapshot()?.text ?? "", omittedBytes: 0, screen: "changed", historyMayBeTruncated: false };
 }
@@ -139,7 +143,7 @@ function liveObserved(session: ExecSession): Observed {
 function sessionResult(session: ExecSession, seen: Observed): AgentToolResult<SessionDetails> {
 	const truncated = truncateTail(sanitizeOutputText(seen.text), { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
 	const details: SessionDetails = {
-		session_id: session.id,
+		session_id: sessionNumber(session),
 		transport: transportState(session),
 		output: truncated.content,
 		log_path: session.logPath,
@@ -295,7 +299,7 @@ function registerContainerUrls(
 					.values()
 					.filter((session) => session.cwd === env.root)
 					.map((session) => ({
-						session_id: session.id,
+						session_id: sessionNumber(session),
 						url: `cterm://${session.id}`,
 						transport: transportState(session),
 						command: sanitizeOutputText(session.displayCommand),
@@ -372,8 +376,9 @@ function registerContainerUrls(
 export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => Promise<PreparedEnv>): void {
 	const store = new SessionStore({ maxSessions: 64, lruProtectedCount: 8 });
 	let lifecycle: "active" | "shutdown" = "active";
+	let nextSessionNumber = 1;
 	const getSession = (id: number, env: PreparedEnv): ExecSession => {
-		const session = store.get(id);
+		const session = store.get(String(id));
 		if (!session || session.cwd !== env.root) throw new Error(`Unknown container session ${id} in environment ${env.root}.`);
 		return session;
 	};
@@ -412,8 +417,9 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 			if (!(await containerRunning(env.host, env.container))) {
 				throw new Error(`Container ${env.container} is not running. Call remote_env_init to prepare this worktree's environment.`);
 			}
-			const session = ExecSession.spawn(store.allocateId(), {
+			const session = ExecSession.spawn(String(nextSessionNumber++), {
 				command: execArgv(env.host, env.container, env.config.shell),
+				shell: env.config.shell,
 				title: tr(`Container ${env.container}`, `容器 ${env.container}`),
 				cwd: env.root,
 				env: process.env,
