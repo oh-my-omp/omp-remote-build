@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the plugin failing to load on omp 19.2.0 by importing output truncation (`truncateTail`, `DEFAULT_MAX_BYTES`, `DEFAULT_MAX_LINES`) from `@oh-my-pi/pi-coding-agent/tools/streaming-output`, where 19.2.0 moved it from `@oh-my-pi/pi-tui`; container tool output keeps the same tail and truncation limits
+
 ## [0.1.28] - 2026-11-24
 
 ### Changed
