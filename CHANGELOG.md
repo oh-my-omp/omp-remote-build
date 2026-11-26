@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-27
+
 ### Breaking Changes
 
 - Komodo credentials now come from the km connection list (`komodo.endpoint` names `<endpointsDir>/<endpoint>.toml` with `host`/`bao_path`/`key_field`/`secret_field`) and OpenBao via `bao-exec run --path <bao_path> -- printenv <field>`; `komodo.profile` and `komodo.cliConfig` are rejected as unknown fields and no `komodo.cli.toml` is read — migrate `<agentDir>/remote-build.json`
