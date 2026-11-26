@@ -2,12 +2,13 @@
   "ssh": "build-host",
   "remoteRoot": "/srv/remote-build",
   "komodo": {
-    "profile": "build",
+    "endpoint": "build",
     "server": "build-host",
-    "cliConfig": "~/.config/komodo/komodo.cli.toml"
+    "endpointsDir": "~/.config/komodo/endpoints"
   },
   "bin": {
     "km": "km",
-    "mutagen": "mutagen"
+    "mutagen": "mutagen",
+    "baoExec": "bao-exec"
   }
 }

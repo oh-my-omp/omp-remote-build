@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RemoteBuildError } from "../src/diagnostics.ts";
@@ -167,14 +167,24 @@ const stub = Bun.serve({
 });
 
 const dir = mkdtempSync(join(tmpdir(), "rb-komodo-"));
-const cliConfig = join(dir, "komodo.cli.toml");
-writeFileSync(cliConfig, `[[profile]]\nname = "build"\nhost = "${stub.url.origin}"\nkey = "K-test"\nsecret = "S-test"\n`);
+const endpointsDir = join(dir, "endpoints");
+mkdirSync(endpointsDir, { recursive: true });
+writeFileSync(
+	join(endpointsDir, "build.toml"),
+	`host = "${stub.url.origin}"\nbao_path = "kv/test/stub"\nkey_field = "STUB_KEY"\nsecret_field = "STUB_SECRET"\n`,
+);
+const baoExec = join(dir, "bao-exec");
+writeFileSync(
+	baoExec,
+	`#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\nshift\nSTUB_KEY=K-test STUB_SECRET=S-test "$@"\n`,
+);
+chmodSync(baoExec, 0o755);
 
 const host: HostConfig = {
 	ssh: "build-host",
 	remoteRoot: "/srv/remote-build",
-	komodo: { profile: "build", server: "build-server", cliConfig },
-	bin: { km: "km", mutagen: "mutagen" },
+	komodo: { endpoint: "build", server: "build-server", endpointsDir },
+	bin: { km: "km", mutagen: "mutagen", baoExec },
 };
 
 const spec: ContainerSpec = { name: "rb-test-abcdef1234", image: "img:test", workdir: null, mounts: [], env: {} };

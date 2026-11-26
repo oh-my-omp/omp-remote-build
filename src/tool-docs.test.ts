@@ -53,8 +53,8 @@ test("cterm:// registers conditionally without promptDoc and lists empty session
 		host: {
 			ssh: "stub-host",
 			remoteRoot: "/srv/remote-build",
-			komodo: { profile: "stub", server: "stub-server", cliConfig: "/tmp/komodo.toml" },
-			bin: { km: "km", mutagen: "mutagen" },
+			komodo: { endpoint: "stub", server: "stub-server", endpointsDir: "/tmp/komodo-endpoints" },
+			bin: { km: "km", mutagen: "mutagen", baoExec: "bao-exec" },
 		},
 		config: {
 			workdir: "/workspace",
