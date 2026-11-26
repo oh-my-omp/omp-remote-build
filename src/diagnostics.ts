@@ -10,10 +10,17 @@ export type Diagnostic =
 	  }
 	| { readonly kind: "config-relative"; readonly path: string; readonly field: string; readonly value: string }
 	| { readonly kind: "config-image-source"; readonly path: string }
-	| { readonly kind: "km-config-read"; readonly path: string }
-	| { readonly kind: "km-profile-missing"; readonly path: string; readonly profile: string }
-	| { readonly kind: "km-profile-field"; readonly profile: string; readonly field: string }
-	| { readonly kind: "km-profile-url"; readonly profile: string; readonly reason: "url" | "components" }
+	| { readonly kind: "km-endpoint-read"; readonly path: string }
+	| {
+			readonly kind: "km-endpoint-field";
+			readonly endpoint: string;
+			readonly path: string;
+			readonly field: "host" | "bao_path" | "key_field" | "secret_field";
+	  }
+	| { readonly kind: "km-endpoint-url"; readonly endpoint: string; readonly reason: "url" | "components" }
+	| { readonly kind: "bao-exec-spawn"; readonly command: string; readonly baoPath: string }
+	| { readonly kind: "bao-exec-exit"; readonly baoPath: string; readonly field: string; readonly code: number }
+	| { readonly kind: "bao-exec-value"; readonly baoPath: string; readonly field: string }
 	| { readonly kind: "komodo-shape"; readonly field: string; readonly expected: "object" | "string" | "boolean" | "number" | "array" }
 	| { readonly kind: "komodo-variant"; readonly variant: "image" | "update" }
 	| { readonly kind: "komodo-network"; readonly operation: string; readonly host: string }
