@@ -10,7 +10,7 @@ import {
 	type SchemeSpec,
 	type WriteContext,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail } from "@oh-my-pi/pi-coding-agent/tools/streaming-output";
 import type { CollectResult } from "omp-actual-terminal/src/collect.ts";
 import { waitForExitOrDeadline } from "omp-actual-terminal/src/long-wait.ts";
 import { sanitizeOutputText } from "omp-actual-terminal/src/output-safety.ts";

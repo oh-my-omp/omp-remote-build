@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
+import { truncateTail } from "@oh-my-pi/pi-coding-agent/tools/streaming-output";
 import { CONFIG_PATH } from "./config.ts";
 import { buildImage, imageExists } from "./komodo.ts";
 import { writeRemoteFile } from "./remote-files.ts";
