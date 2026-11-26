@@ -42,15 +42,25 @@ stub("mutagen");
 stub("km");
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
-const kmCliConfig = join(fixtureRoot, "komodo.cli.toml");
-writeFileSync(kmCliConfig, `[[profile]]\nname = "stub"\nhost = "http://127.0.0.1:1"\nkey = "K-test"\nsecret = "S-test"\n`);
+const endpointsDir = join(fixtureRoot, "endpoints");
+mkdirSync(endpointsDir, { recursive: true });
+writeFileSync(
+	join(endpointsDir, "stub.toml"),
+	`host = "http://127.0.0.1:1"\nbao_path = "kv/test/stub"\nkey_field = "STUB_KEY"\nsecret_field = "STUB_SECRET"\n`,
+);
+const baoExec = join(binDir, "bao-exec");
+writeFileSync(
+	baoExec,
+	`#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\nshift\nSTUB_KEY=K-test STUB_SECRET=S-test "$@"\n`,
+);
+execFileSync("chmod", ["+x", baoExec]);
 writeFileSync(
 	join(agentDir, "remote-build.json"),
 	JSON.stringify({
 		ssh: "stub-host",
 		remoteRoot: "/srv/remote-build",
-		komodo: { profile: "stub", server: "stub-server", cliConfig: kmCliConfig },
-		bin: { km: join(binDir, "km"), mutagen: join(binDir, "mutagen") },
+		komodo: { endpoint: "stub", server: "stub-server", endpointsDir },
+		bin: { km: join(binDir, "km"), mutagen: join(binDir, "mutagen"), baoExec },
 	}),
 );
 

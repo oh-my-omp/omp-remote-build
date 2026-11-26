@@ -55,14 +55,26 @@ const core = Bun.serve({
 		return type === "ListServers" ? Response.json([]) : new Response("unexpected", { status: 400 });
 	},
 });
-await writeFile(join(dir, "km.toml"), `[[profile]]\nname = "stub"\nhost = "http://127.0.0.1:${core.port}"\nkey = "k"\nsecret = "s"\n`);
+const endpointsDir = join(dir, "endpoints");
+await mkdir(endpointsDir, { recursive: true });
+await writeFile(
+	join(endpointsDir, "stub.toml"),
+	`host = "http://127.0.0.1:${core.port}"\nbao_path = "kv/test/stub"\nkey_field = "STUB_KEY"\nsecret_field = "STUB_SECRET"\n`,
+);
+await mkdir(join(dir, "bin"), { recursive: true });
+await writeFile(
+	join(dir, "bin", "bao-exec"),
+	`#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\nshift\nSTUB_KEY=K-test STUB_SECRET=S-test "$@"\n`,
+);
+await chmod(join(dir, "bin", "bao-exec"), 0o755);
 await mkdir(join(dir, "agent"), { recursive: true });
 await writeFile(
 	join(dir, "agent", "remote-build.json"),
 	JSON.stringify({
 		ssh: "stub-host",
 		remoteRoot: join(dir, "remote"),
-		komodo: { profile: "stub", server: "stub-server", cliConfig: join(dir, "km.toml") },
+		komodo: { endpoint: "stub", server: "stub-server", endpointsDir },
+		bin: { baoExec: join(dir, "bin", "bao-exec") },
 	}),
 );
 

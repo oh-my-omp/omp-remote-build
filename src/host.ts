@@ -9,8 +9,8 @@ export function hostConfigPath(): string {
 }
 
 const KNOWN_FIELDS: Record<keyof HostConfig, true> = { ssh: true, remoteRoot: true, komodo: true, bin: true };
-const KNOWN_KOMODO_FIELDS: Record<keyof HostConfig["komodo"], true> = { profile: true, server: true, cliConfig: true };
-const KNOWN_BIN_FIELDS: Record<keyof HostConfig["bin"], true> = { km: true, mutagen: true };
+const KNOWN_KOMODO_FIELDS: Record<keyof HostConfig["komodo"], true> = { endpoint: true, server: true, endpointsDir: true };
+const KNOWN_BIN_FIELDS: Record<keyof HostConfig["bin"], true> = { km: true, mutagen: true, baoExec: true };
 
 export async function loadHost(): Promise<HostConfig> {
 	const path = hostConfigPath();
@@ -40,18 +40,19 @@ export async function loadHost(): Promise<HostConfig> {
 	const bin = object(config.bin ?? {}, "bin", KNOWN_BIN_FIELDS);
 	const remoteRoot = text(config.remoteRoot, "remoteRoot").replace(/\/+$/, "");
 	if (!remoteRoot.startsWith("/")) fail("remoteRoot", "host-absolute");
-	const cliConfig = text(komodo.cliConfig ?? join(homedir(), ".config", "komodo", "komodo.cli.toml"), "komodo.cliConfig");
+	const endpointsDir = text(komodo.endpointsDir ?? join(homedir(), ".config", "komodo", "endpoints"), "komodo.endpointsDir");
 	return {
 		ssh: text(config.ssh, "ssh"),
 		remoteRoot,
 		komodo: {
-			profile: text(komodo.profile, "komodo.profile"),
+			endpoint: text(komodo.endpoint, "komodo.endpoint"),
 			server: text(komodo.server, "komodo.server"),
-			cliConfig: cliConfig.startsWith("~/") ? join(homedir(), cliConfig.slice(2)) : cliConfig,
+			endpointsDir: endpointsDir.startsWith("~/") ? join(homedir(), endpointsDir.slice(2)) : endpointsDir,
 		},
 		bin: {
 			km: text(bin.km ?? "km", "bin.km"),
 			mutagen: text(bin.mutagen ?? "mutagen", "bin.mutagen"),
+			baoExec: text(bin.baoExec ?? "bao-exec", "bin.baoExec"),
 		},
 	};
 }

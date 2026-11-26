@@ -1,4 +1,6 @@
+import { join } from "node:path";
 import { RemoteBuildError } from "./diagnostics.ts";
+import { runResult } from "./run.ts";
 import type { ContainerSpec, HostConfig, ImageBuildSpec, OnceResult } from "./types.ts";
 
 interface Endpoint {
@@ -112,45 +114,68 @@ function mongoId(value: unknown): string {
 }
 
 async function loadEndpoint(host: HostConfig): Promise<Endpoint> {
-	const path = host.komodo.cliConfig;
+	const { endpoint, endpointsDir } = host.komodo;
+	const path = join(endpointsDir, `${endpoint}.toml`);
 	let parsed: unknown;
 	try {
 		parsed = Bun.TOML.parse(await Bun.file(path).text());
 	} catch {
 		// TOML diagnostics may contain the original line, including a credential.
-		throw new RemoteBuildError({ kind: "km-config-read", path });
+		throw new RemoteBuildError({ kind: "km-endpoint-read", path });
 	}
-	const profiles = array(record(parsed, "km CLI config").profile ?? [], "km CLI config [[profile]]").map((entry) =>
-		record(entry, "[[profile]]"),
-	);
-	const fields = profiles.find(
-		(entry) => entry.name === host.komodo.profile || (Array.isArray(entry.aliases) && entry.aliases.includes(host.komodo.profile)),
-	);
-	if (fields === undefined) throw new RemoteBuildError({ kind: "km-profile-missing", path, profile: host.komodo.profile });
-	const required = (name: "host" | "key" | "secret"): string => {
-		const value = fields[name];
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new RemoteBuildError({ kind: "km-endpoint-read", path });
+	}
+	const fields = new Map<string, unknown>(Object.entries(parsed));
+	const field = (name: "host" | "bao_path"): string => {
+		const value = fields.get(name);
 		if (typeof value !== "string" || value.length === 0 || /[\r\n\0]/.test(value)) {
-			throw new RemoteBuildError({ kind: "km-profile-field", profile: host.komodo.profile, field: name });
+			throw new RemoteBuildError({ kind: "km-endpoint-field", endpoint, path, field: name });
 		}
 		return value;
 	};
-	const url = required("host");
+	const variable = (name: "key_field" | "secret_field"): string => {
+		const value = fields.get(name);
+		if (typeof value !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+			throw new RemoteBuildError({ kind: "km-endpoint-field", endpoint, path, field: name });
+		}
+		return value;
+	};
+	const url = field("host");
+	const baoPath = field("bao_path");
+	const keyField = variable("key_field");
+	const secretField = variable("secret_field");
 	let parsedUrl: URL;
 	try {
 		parsedUrl = new URL(url);
 	} catch {
-		throw new RemoteBuildError({ kind: "km-profile-url", profile: host.komodo.profile, reason: "url" });
+		throw new RemoteBuildError({ kind: "km-endpoint-url", endpoint, reason: "url" });
 	}
-	if (
-		(parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") ||
-		parsedUrl.username ||
-		parsedUrl.password ||
-		parsedUrl.search ||
-		parsedUrl.hash
-	) {
-		throw new RemoteBuildError({ kind: "km-profile-url", profile: host.komodo.profile, reason: "components" });
+	if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+		throw new RemoteBuildError({ kind: "km-endpoint-url", endpoint, reason: "url" });
 	}
-	return { host: url.replace(/\/+$/, ""), key: required("key"), secret: required("secret") };
+	if (parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+		throw new RemoteBuildError({ kind: "km-endpoint-url", endpoint, reason: "components" });
+	}
+	const [key, secret] = await Promise.all([baoValue(host, baoPath, keyField), baoValue(host, baoPath, secretField)]);
+	return { host: url.replace(/\/+$/, ""), key, secret };
+}
+
+async function baoValue(host: HostConfig, baoPath: string, field: string): Promise<string> {
+	let result: { code: number; stdout: string; stderr: string };
+	try {
+		result = await runResult([host.bin.baoExec, "run", "--path", baoPath, "--", "printenv", field]);
+	} catch {
+		throw new RemoteBuildError({ kind: "bao-exec-spawn", command: host.bin.baoExec, baoPath });
+	}
+	if (result.code !== 0) {
+		throw new RemoteBuildError({ kind: "bao-exec-exit", baoPath, field, code: result.code });
+	}
+	const value = result.stdout.endsWith("\n") ? result.stdout.slice(0, -1) : result.stdout;
+	if (value === "" || /[\r\n\0]/.test(value)) {
+		throw new RemoteBuildError({ kind: "bao-exec-value", baoPath, field });
+	}
+	return value;
 }
 
 async function send(endpoint: Endpoint, operation: Request): Promise<Response> {
@@ -510,8 +535,16 @@ export async function containerRunning(host: HostConfig, name: string): Promise<
 	return state === "running" || state === "paused" || state === "restarting" || state === "stopping" || state === "removing";
 }
 
-export function execArgv(host: HostConfig, container: string, shell: string): string[] {
-	return [host.bin.km, "-c", host.komodo.cliConfig, "-p", host.komodo.profile, "exec", "--server", host.komodo.server, container, shell];
+export async function execTransport(
+	host: HostConfig,
+	container: string,
+	shell: string,
+): Promise<{ readonly argv: string[]; readonly env: Readonly<Record<string, string>> }> {
+	const endpoint = await loadEndpoint(host);
+	return {
+		argv: [host.bin.km, "exec", "--server", host.komodo.server, container, shell],
+		env: { KOMODO_CLI_HOST: endpoint.host, KOMODO_CLI_KEY: endpoint.key, KOMODO_CLI_SECRET: endpoint.secret },
+	};
 }
 
 export async function komodoReachable(host: HostConfig): Promise<void> {

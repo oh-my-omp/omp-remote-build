@@ -83,28 +83,38 @@ export function renderDiagnostic(diagnostic: Diagnostic, lang: Language): string
 				`${diagnostic.path}: set at most one of "image" and "dockerfile"`,
 				`${diagnostic.path}：“image”和“dockerfile”最多只能设置一个`,
 			);
-		case "km-config-read":
-			return text(`Cannot read or parse km CLI config: ${diagnostic.path}`, `无法读取或解析 km CLI 配置：${diagnostic.path}`);
-		case "km-profile-missing":
+		case "km-endpoint-read":
+			return text(`Cannot read or parse km endpoint file: ${diagnostic.path}`, `无法读取或解析 km 连接清单：${diagnostic.path}`);
+		case "km-endpoint-field":
 			return text(
-				`km CLI config ${diagnostic.path} has no [[profile]] named "${diagnostic.profile}"`,
-				`km CLI 配置 ${diagnostic.path} 中没有名为“${diagnostic.profile}”的 [[profile]]`,
+				`km endpoint "${diagnostic.endpoint}" has an invalid ${diagnostic.field} field in ${diagnostic.path}`,
+				`km 连接清单 ${diagnostic.path} 中 endpoint“${diagnostic.endpoint}”的 ${diagnostic.field} 字段无效`,
 			);
-		case "km-profile-field":
-			return text(
-				`km CLI profile "${diagnostic.profile}" has an invalid ${diagnostic.field} field`,
-				`km CLI profile“${diagnostic.profile}”的 ${diagnostic.field} 字段无效`,
-			);
-		case "km-profile-url":
+		case "km-endpoint-url":
 			return diagnostic.reason === "url"
 				? text(
-						`km CLI profile "${diagnostic.profile}" host must be an HTTP(S) URL`,
-						`km CLI profile“${diagnostic.profile}”的 host 必须是 HTTP(S) URL`,
+						`km endpoint "${diagnostic.endpoint}" host must be an HTTP(S) URL`,
+						`km endpoint“${diagnostic.endpoint}”的 host 必须是 HTTP(S) URL`,
 					)
 				: text(
-						`km CLI profile "${diagnostic.profile}" host must be an HTTP(S) URL without embedded credentials, query or fragment`,
-						`km CLI profile“${diagnostic.profile}”的 host 必须是 HTTP(S) URL，且不能包含内嵌凭据、查询或片段`,
+						`km endpoint "${diagnostic.endpoint}" host must be an HTTP(S) URL without embedded credentials, query or fragment`,
+						`km endpoint“${diagnostic.endpoint}”的 host 必须是 HTTP(S) URL，且不能包含内嵌凭据、查询或片段`,
 					);
+		case "bao-exec-spawn":
+			return text(
+				`Cannot run ${diagnostic.command} to read credentials from ${diagnostic.baoPath}`,
+				`无法运行 ${diagnostic.command} 从 ${diagnostic.baoPath} 读取凭据`,
+			);
+		case "bao-exec-exit":
+			return text(
+				`Reading ${diagnostic.field} from ${diagnostic.baoPath} failed: bao-exec exited ${diagnostic.code}`,
+				`从 ${diagnostic.baoPath} 读取 ${diagnostic.field} 失败：bao-exec 退出码 ${diagnostic.code}`,
+			);
+		case "bao-exec-value":
+			return text(
+				`Reading ${diagnostic.field} from ${diagnostic.baoPath} returned no usable value (bao-exec exited 0)`,
+				`从 ${diagnostic.baoPath} 读取 ${diagnostic.field} 未得到可用值（bao-exec 退出码 0）`,
+			);
 		case "komodo-shape": {
 			const { field, expected } = diagnostic;
 			switch (expected) {
