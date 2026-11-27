@@ -2,13 +2,14 @@ export interface HostConfig {
 	readonly ssh: string;
 	readonly remoteRoot: string;
 	readonly komodo: {
-		readonly profile: string;
+		readonly endpoint: string;
 		readonly server: string;
-		readonly cliConfig: string;
+		readonly endpointsDir: string;
 	};
 	readonly bin: {
 		readonly km: string;
 		readonly mutagen: string;
+		readonly baoExec: string;
 	};
 }
 

@@ -36,8 +36,8 @@ const mutagen = await import(join(src, "mutagen.ts"));
 const host = {
 	ssh: "stub-host",
 	remoteRoot: join(dir, "remote"),
-	komodo: { profile: "p", server: "s", cliConfig: "/dev/null" },
-	bin: { km: "km", mutagen: "mutagen" },
+	komodo: { endpoint: "p", server: "s", endpointsDir: join(dir, "endpoints") },
+	bin: { km: "km", mutagen: "mutagen", baoExec: "bao-exec" },
 };
 
 async function measure<T>(call: () => Promise<T>): Promise<{ value: T; heapPeakDelta: number; rssPeakDelta: number }> {

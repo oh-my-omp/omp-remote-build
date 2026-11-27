@@ -20,7 +20,7 @@ import { SessionStore } from "omp-actual-terminal/src/session-store.ts";
 import { tr } from "../omomp-shared/i18n.ts";
 import { registerInternalScheme } from "../omomp-shared/internal-url.ts";
 import { omompTool, verbatim } from "../omomp-shared/tool-entry.ts";
-import { containerRunning, execArgv } from "./komodo.ts";
+import { containerRunning, execTransport } from "./komodo.ts";
 import { TOOL_DESCRIPTIONS } from "./tool-docs.ts";
 import type { PreparedEnv } from "./types.ts";
 
@@ -418,12 +418,13 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 			if (!(await containerRunning(env.host, env.container))) {
 				throw new Error(`Container ${env.container} is not running. Call remote_env_init to prepare this worktree's environment.`);
 			}
+			const transport = await execTransport(env.host, env.container, env.config.shell);
 			const session = ExecSession.spawn(String(nextSessionNumber++), {
-				command: execArgv(env.host, env.container, env.config.shell),
+				command: transport.argv,
 				shell: env.config.shell,
 				title: tr(`Container ${env.container}`, `容器 ${env.container}`),
 				cwd: env.root,
-				env: process.env,
+				env: { ...process.env, ...transport.env },
 				cols: 120,
 				rows: 30,
 			});
