@@ -19,6 +19,7 @@ import { ExecSession } from "omp-actual-terminal/src/session.ts";
 import { SessionStore } from "omp-actual-terminal/src/session-store.ts";
 import { tr } from "../omomp-shared/i18n.ts";
 import { registerInternalScheme } from "../omomp-shared/internal-url.ts";
+import { omompTool, verbatim } from "../omomp-shared/tool-entry.ts";
 import { containerRunning, execTransport } from "./komodo.ts";
 import { TOOL_DESCRIPTIONS } from "./tool-docs.ts";
 import type { PreparedEnv } from "./types.ts";
@@ -55,15 +56,14 @@ const yieldSchema = z
 	.describe("Attachment window in milliseconds, not a command timeout; 250–30000.");
 const sessionIdSchema = z.number().int().positive().describe("Session ID returned by container_exec, scoped to the current environment.");
 const execSchema = z.object({
-	input: z.string().optional().describe("Optional initial shell input written verbatim (include trailing newline to execute)."),
+	input: verbatim(z.string().optional().describe("Optional initial shell input written verbatim (include trailing newline to execute).")),
 	yield_time_ms: yieldSchema,
 });
 const writeSchema = z.object({
 	session_id: sessionIdSchema,
-	text: z
-		.string()
-		.optional()
-		.describe("Verbatim UTF-8 text to write to stdin (no backslash escaping). Mutually exclusive with raw_base64."),
+	text: verbatim(
+		z.string().optional().describe("Verbatim UTF-8 text to write to stdin (no backslash escaping). Mutually exclusive with raw_base64."),
+	),
 	enter: z
 		.boolean()
 		.optional()
@@ -217,23 +217,24 @@ async function collectSession(
 }
 
 function resolveWriteBytes(params: z.infer<typeof writeSchema>): Uint8Array | undefined {
-	const hasText = typeof params.text === "string" && params.text.length > 0;
+	const hasText = params.text !== undefined;
 	const hasEnter = params.enter === true;
 	const hasSpecialKey = params.special_key !== undefined;
-	const hasB64 = typeof params.raw_base64 === "string" && params.raw_base64.length > 0;
+	const hasB64 = params.raw_base64 !== undefined;
 	if (hasB64 && (hasText || hasEnter || hasSpecialKey)) {
 		throw new Error("container_write_stdin: `raw_base64` cannot be combined with `text`, `enter`, or `special_key`.");
 	}
-	if (hasB64) {
-		const b64 = params.raw_base64!.replace(/\s+/g, "");
+	if (params.raw_base64 !== undefined) {
+		const b64 = params.raw_base64.replace(/\s+/g, "");
 		if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) {
 			throw new Error("container_write_stdin: `raw_base64` is not valid base64.");
 		}
 		return new Uint8Array(Buffer.from(b64, "base64"));
 	}
+	if (!hasText && !hasSpecialKey && !hasEnter) return undefined;
 	const combined =
 		(params.text ?? "") + (params.special_key !== undefined ? SPECIAL_KEY_BYTES[params.special_key] : "") + (hasEnter ? "\r" : "");
-	return combined.length > 0 ? encoder.encode(combined) : undefined;
+	return encoder.encode(combined);
 }
 
 function sendRawBytes(session: ExecSession, bytes: Uint8Array | undefined): void {
@@ -429,11 +430,11 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 			});
 			if (session.failureMessage) throw new Error(`Could not open container PTY: ${session.failureMessage}`);
 			store.insert(session);
-			sendRawBytes(session, params.input ? encoder.encode(params.input) : undefined);
+			sendRawBytes(session, params.input !== undefined ? encoder.encode(params.input) : undefined);
 			return collectSession(session, params.yield_time_ms ?? 10_000, signal, onUpdate, store);
 		},
 	} satisfies ToolDefinition<typeof execSchema>;
-	pi.registerTool(execTool);
+	pi.registerTool(omompTool(execTool));
 
 	const writeTool = {
 		name: "container_write_stdin",
@@ -451,5 +452,5 @@ export function registerContainerTools(pi: ExtensionAPI, ensureEnv: (cwd: string
 			return collectSession(session, params.yield_time_ms ?? 250, signal, onUpdate, store);
 		},
 	} satisfies ToolDefinition<typeof writeSchema>;
-	pi.registerTool(writeTool);
+	pi.registerTool(omompTool(writeTool));
 }

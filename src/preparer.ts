@@ -47,12 +47,12 @@ Image rules
 4. Prefer official or \`-bin\` toolchain packages over installers that compile.
 5. The build context is empty: no COPY or ADD of project files.
 6. Install only outside the working directory: system packages, toolchains, global tools, caches. Anything a dependency manager puts inside the project directory (node_modules, .venv, vendor directories, build outputs) belongs in the bootstrap command, because the mount hides image content at that path.
-7. The bootstrap command is a single idempotent shell line (chain with &&). It runs with \`<shell> -c\` in the working directory of a fresh container after every deployment. Use an empty string when nothing is needed.
+7. The bootstrap command is a single idempotent shell line (chain with &&). It runs with \`<shell> -c\` in the working directory of a fresh container after every deployment. When nothing is needed, omit \`bootstrap\` and pass \`no_bootstrap: true\`.
 
 Workflow
 1. Read the project: README and contributing docs, manifests and lockfiles, toolchain pins (rust-toolchain, .nvmrc, .python-version, go.mod, .tool-versions), CI workflows, Makefile or justfile. Determine the build, test and run commands.
 2. The container currently runs rb-base-archlinux:latest. Try installs and commands there with container_exec; nothing there persists.
-3. Call remote_env_build_image with the complete Dockerfile and the bootstrap command (empty string for none). It builds a candidate image, recreates the container from it (ending open container sessions), runs the bootstrap command and returns the output. Other agents use remote_env_init. On failure, fix and call it again.
+3. Call remote_env_build_image with the complete Dockerfile and either the bootstrap command or \`no_bootstrap: true\`. It builds a candidate image, recreates the container from it (ending open container sessions), runs the bootstrap command and returns the output. Other agents use remote_env_init. On failure, fix and call it again.
 4. After a successful call, open a new container_exec session (earlier sessions ended when the container was recreated). Run the project's build, then its tests or main run command, and read every exit code with \`echo $?\`. If something is missing, change the Dockerfile or bootstrap and call remote_env_build_image again.
 5. You are done only when, in the container created by your last successful remote_env_build_image call, the build and the tests (or the main run command when there are no tests) exit 0; only then report result: success. Any other result publishes nothing. If a command cannot pass for a reason outside the environment (secrets, external services, tests failing in the code itself), stop and report result: partial or failed with the exact reason and its output.
 
