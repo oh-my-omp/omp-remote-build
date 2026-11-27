@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Changed `remote_env_build_image` so omitting a bootstrap command is expressed explicitly with `no_bootstrap: true` instead of `bootstrap: ""`; `bootstrap` and `no_bootstrap` are mutually exclusive and one of them must be provided
+
+### Changed
+
+- Registered all four plugin tools (`container_exec`, `container_write_stdin`, `remote_env_init`, `remote_env_build_image`) through the shared `omompTool` entry (`omomp-shared/tool-entry.ts` from `oh-my-omp/shared@960ad19`) so blank strings, empty arrays/objects, and `null` are normalized as omitted before validation while `container_exec.input` and `container_write_stdin.text` preserve whitespace verbatim
+
 ## [0.2.0] - 2026-11-27
 
 ### Breaking Changes

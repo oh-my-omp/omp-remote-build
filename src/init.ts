@@ -1,6 +1,7 @@
 import { z } from "@oh-my-pi/omptype/zod";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { tr } from "../omomp-shared/i18n.ts";
+import { omompTool } from "../omomp-shared/tool-entry.ts";
 import { CONFIG_PATH, GENERATED_DOCKERFILE, loadConfig, PREPARER_REPORT, publishPreparedImage, readPreparerReport } from "./config.ts";
 import { envContainerSpec, mainCheckout, projectIdFor } from "./environment.ts";
 import { ensureContainer, imageExists, runOnce } from "./komodo.ts";
@@ -36,8 +37,29 @@ const buildSchema = z.object({
 	dockerfile: z.string().describe(`Complete Dockerfile text; final stage FROM ${BASE_IMAGE}; empty build context, so no COPY or ADD.`),
 	bootstrap: z
 		.string()
-		.describe("One-line idempotent shell command run in the working directory after each container deployment; empty string for none."),
+		.optional()
+		.describe(
+			"One-line idempotent shell command run in the working directory after each container deployment. Mutually exclusive with no_bootstrap; pass either bootstrap or no_bootstrap: true.",
+		),
+	no_bootstrap: z
+		.literal(true)
+		.optional()
+		.describe(
+			"Set to true when no bootstrap command is needed. Mutually exclusive with bootstrap; pass either bootstrap or no_bootstrap: true.",
+		),
 });
+
+function resolveBuildBootstrap(params: z.infer<typeof buildSchema>): string | null {
+	if (params.bootstrap !== undefined && params.no_bootstrap === true) {
+		throw new Error("remote_env_build_image: `bootstrap` cannot be combined with `no_bootstrap`.");
+	}
+	if (params.no_bootstrap === true) return null;
+	if (params.bootstrap === undefined) {
+		throw new Error("remote_env_build_image: pass either `bootstrap` or `no_bootstrap: true`.");
+	}
+	if (/[\r\n\0]/.test(params.bootstrap)) throw new Error("bootstrap must be a single line");
+	return params.bootstrap.trim();
+}
 
 type InitMode = "reuse" | "rebuild-image" | "reprepare";
 
@@ -293,7 +315,7 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 			return { content: [{ type: "text", text: report }], details: { report } };
 		},
 	} satisfies ToolDefinition<typeof initSchema>;
-	pi.registerTool(initTool);
+	pi.registerTool(omompTool(initTool));
 
 	const buildTool = {
 		name: "remote_env_build_image",
@@ -307,6 +329,7 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 			if (ctx.agent.name !== PREPARER_AGENT_NAME) {
 				throw new Error("remote_env_build_image is only available to the remote-env-preparer agent; call remote_env_init");
 			}
+			const bootstrap = resolveBuildBootstrap(params);
 			const env = await liveEnv(await ensureEnv(ctx.cwd));
 			const source = env.config.imageSource;
 			if (source.kind === "configured" || (source.kind === "dockerfile" && source.path !== GENERATED_DOCKERFILE)) {
@@ -315,8 +338,6 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 			const dockerfile = params.dockerfile.endsWith("\n") ? params.dockerfile : `${params.dockerfile}\n`;
 			if (stageBases(dockerfile).at(-1) !== BASE_IMAGE) throw new Error(`final stage must be FROM ${BASE_IMAGE}`);
 			if (/^\s*(?:COPY|ADD)\s/im.test(dockerfile)) throw new Error("the build context is empty: COPY and ADD are not allowed");
-			if (/[\r\n\0]/.test(params.bootstrap)) throw new Error("bootstrap must be a single line");
-			const bootstrap = params.bootstrap.trim() || null;
 			const pid = projectIdFor(await mainCheckout(env.root));
 			const image = projectImage(pid, sha256(dockerfile));
 			const dir = prepareDir(env.host, env.id);
@@ -350,5 +371,5 @@ export function registerInitTools(pi: ExtensionAPI, ensureEnv: (cwd: string) => 
 			return { content: [{ type: "text", text }], details: { report: text } };
 		},
 	} satisfies ToolDefinition<typeof buildSchema>;
-	pi.registerTool(buildTool);
+	pi.registerTool(omompTool(buildTool));
 }
