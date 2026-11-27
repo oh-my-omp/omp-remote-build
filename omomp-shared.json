@@ -1,4 +1,4 @@
 {
 	"directory": "omomp-shared",
-	"files": ["active-tools.ts", "biome.base.json", "context-delta.ts", "i18n.ts", "internal-url.ts"]
+	"files": ["active-tools.ts", "biome.base.json", "context-delta.ts", "i18n.ts", "internal-url.ts", "tool-entry.ts"]
 }

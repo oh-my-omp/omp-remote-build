@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Changed `remote_env_build_image` so omitting a bootstrap command is expressed explicitly with `no_bootstrap: true` instead of `bootstrap: ""`; `bootstrap` and `no_bootstrap` are mutually exclusive and one of them must be provided
+
+### Changed
+
+- Registered all four plugin tools (`container_exec`, `container_write_stdin`, `remote_env_init`, `remote_env_build_image`) through the shared `omompTool` entry (`omomp-shared/tool-entry.ts` from `oh-my-omp/shared@960ad19`) so blank strings, empty arrays/objects, and `null` are normalized as omitted before validation while `container_exec.input` and `container_write_stdin.text` preserve whitespace verbatim
+
 ### Fixed
 
 - Fixed the plugin failing to load on omp 19.2.0 by importing output truncation (`truncateTail`, `DEFAULT_MAX_BYTES`, `DEFAULT_MAX_LINES`) from `@oh-my-pi/pi-coding-agent/tools/streaming-output`, where 19.2.0 moved it from `@oh-my-pi/pi-tui`; container tool output keeps the same tail and truncation limits
