@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-28
+
 ### Breaking Changes
 
 - Changed `remote_env_build_image` so omitting a bootstrap command is expressed explicitly with `no_bootstrap: true` instead of `bootstrap: ""`; `bootstrap` and `no_bootstrap` are mutually exclusive and one of them must be provided
